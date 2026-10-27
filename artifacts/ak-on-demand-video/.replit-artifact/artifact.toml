@@ -1,0 +1,31 @@
+kind = "video"
+previewPath = "/ak-on-demand-video/"
+title = "AK On Demand — Brand Video"
+version = "1.0.0"
+id = "artifacts/ak-on-demand-video"
+router = "path"
+
+[[integratedSkills]]
+name = "video-js"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/ak-on-demand-video/" ]
+localPort = 20911
+
+[services.development]
+run = "pnpm --filter @workspace/ak-on-demand-video run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/ak-on-demand-video", "run", "build" ]
+publicDir = "artifacts/ak-on-demand-video/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "20911"
+BASE_PATH = "/ak-on-demand-video/"

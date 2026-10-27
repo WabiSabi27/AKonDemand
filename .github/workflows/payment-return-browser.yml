@@ -1,0 +1,54 @@
+name: Payment-return browser regression
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: payment-return-browser-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  payment-return-browser:
+    name: Legacy payment links (Chromium)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CI: 'true'
+      EXPO_NO_TELEMETRY: '1'
+      # Bake a non-routable fixture host into the export, never a deployment URL.
+      # Browser fixtures intercept all API requests before navigation.
+      REPLIT_INTERNAL_APP_DOMAIN: payment-return.invalid
+      BASE_PATH: /
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.26.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+      - name: Install locked mobile dependencies
+        run: pnpm --filter @workspace/mobile... install --frozen-lockfile
+      - name: Install Chromium and Linux dependencies
+        run: pnpm --filter @workspace/mobile exec playwright install --with-deps chromium
+      - name: Build current Expo web export and run mocked browser cases
+        run: pnpm --filter @workspace/mobile run test:browser:payment-return
+      - name: Retain browser failure traces and screenshots
+        if: ${{ failure() && !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: payment-return-browser-failures
+          path: generated-artifacts/payment-return-browser/
+          if-no-files-found: ignore
+          retention-days: 14

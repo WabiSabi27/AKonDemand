@@ -1,0 +1,48 @@
+name: Published payment-return monitor
+
+on:
+  schedule:
+    - cron: '17 */6 * * *'
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Serialize metadata reads and monitoring cycles; never interrupt a running
+# check or allow overlapping jobs to consume the same API account's quota.
+concurrency:
+  group: published-payment-return-monitor
+  cancel-in-progress: false
+
+jobs:
+  check-published-routes:
+    if: vars.PAYMENT_RETURN_MONITOR_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Check current public deployment (routing only)
+        env:
+          PAYMENT_RETURN_MONITOR_ENABLED: ${{ vars.PAYMENT_RETURN_MONITOR_ENABLED }}
+          REPLIT_MONITOR_API_KEY: ${{ secrets.REPLIT_MONITOR_API_KEY }}
+          REPLIT_MONITOR_WORKSPACE_ID: ${{ vars.REPLIT_MONITOR_WORKSPACE_ID }}
+          REPLIT_MONITOR_PROJECT_ID: ${{ vars.REPLIT_MONITOR_PROJECT_ID }}
+        run: node artifacts/mobile/scripts/run-published-payment-monitor.cjs
+      - name: Report monitoring failure to the operator
+        if: failure()
+        run: |
+          echo "::error title=Published payment-return monitor failed::Check the failed run. No paid-application verification was performed. Do not retry payments or republish automatically."
+          echo "## Published payment-return monitor failed" >> "$GITHUB_STEP_SUMMARY"
+          echo "Inspect this run's safe failure messages and the active deployment. This job checks HTTP routing only; it never verifies or modifies payment state." >> "$GITHUB_STEP_SUMMARY"
+      - name: Summarize route-only success
+        if: success()
+        run: |
+          echo "## Legacy payment-return HTTP routes passed" >> "$GITHUB_STEP_SUMMARY"
+          echo "Paid-application verification was NOT RUN. No status or payment APIs were called." >> "$GITHUB_STEP_SUMMARY"

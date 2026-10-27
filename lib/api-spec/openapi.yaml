@@ -1,0 +1,4351 @@
+openapi: 3.1.0
+info:
+  # Do not change the title, if the title changes, the import paths will be broken
+  title: Api
+  version: 0.1.0
+  description: AKODD marketplace API
+servers:
+  - url: /api
+    description: Base API path
+tags:
+  - name: health
+    description: Health operations
+  - name: auth
+    description: Authentication for customers, service providers, and admin
+  - name: catalog
+    description: Categories, businesses, services (read-only catalog)
+  - name: bookings
+    description: Customer/business bookings
+  - name: scheduling
+    description: Blocked slots and live availability
+  - name: notifications
+    description: In-app notification feed and Expo push token registration
+  - name: subscriptions
+    description: Service-provider subscription plans (Basic/Pro/Premium) and Stripe Checkout
+  - name: messages
+    description: Per-booking customer ↔ SP chat threads
+  - name: calendar
+  - name: admin
+    description: SP iCal feed export and external calendar import (Phase 3 #8)
+paths:
+  /healthz:
+    get:
+      operationId: healthCheck
+      tags: [health]
+      summary: Health check
+      description: Returns server health status
+      responses:
+        "200":
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+
+  /categories:
+    get:
+      operationId: listCategories
+      tags: [catalog]
+      summary: List all categories
+      responses:
+        "200":
+          description: Categories
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Category"
+
+  /businesses:
+    get:
+      operationId: listBusinesses
+      tags: [catalog]
+      summary: List businesses
+      parameters:
+        - name: categoryId
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Businesses
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Business"
+
+  /businesses/{id}:
+    get:
+      operationId: getBusiness
+      tags: [catalog]
+      summary: Get a business by id (with employees)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Business
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BusinessDetail"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /services:
+    get:
+      operationId: listServices
+      tags: [catalog]
+      summary: List services
+      parameters:
+        - name: businessId
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: categoryId
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: featured
+          in: query
+          required: false
+          schema:
+            type: boolean
+        - name: q
+          in: query
+          required: false
+          description: Free-text search over service title, business name, and tags.
+          schema:
+            type: string
+        - name: minRating
+          in: query
+          required: false
+          schema:
+            type: number
+            minimum: 0
+            maximum: 5
+        - name: minPrice
+          in: query
+          required: false
+          schema:
+            type: number
+            minimum: 0
+        - name: maxPrice
+          in: query
+          required: false
+          schema:
+            type: number
+            minimum: 0
+        - name: sort
+          in: query
+          required: false
+          description: Sort order. Default `relevance` ranks featured first then by rating.
+          schema:
+            type: string
+            enum: [relevance, rating, price_asc, price_desc]
+      responses:
+        "200":
+          description: Services
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Service"
+    post:
+      operationId: createService
+      tags: [catalog]
+      summary: SP creates a new service for their business
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateServiceRequest"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Service"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /services/{id}:
+    get:
+      operationId: getService
+      tags: [catalog]
+      summary: Get a service by id (with options + reviews)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Service detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceDetail"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    patch:
+      operationId: updateService
+      tags: [catalog]
+      summary: SP edits one of their services
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateServiceRequest"
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Service"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Service not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      operationId: deleteService
+      tags: [catalog]
+      summary: SP deletes one of their services
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Deleted
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Service not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /services/{id}/options:
+    post:
+      operationId: createServiceOption
+      tags: [catalog]
+      summary: SP adds a pricing option to one of their services
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateServiceOptionRequest"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceOption"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Service not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /service-options/{id}:
+    patch:
+      operationId: updateServiceOption
+      tags: [catalog]
+      summary: SP edits one of their service options
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateServiceOptionRequest"
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceOption"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Option not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      operationId: deleteServiceOption
+      tags: [catalog]
+      summary: SP deletes one of their service options
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Deleted
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Option not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /bookings:
+    get:
+      operationId: listBookings
+      tags: [bookings]
+      summary: List bookings filtered by customer or business
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: customerId
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: businessId
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Bookings
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Booking"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    post:
+      operationId: createBooking
+      tags: [bookings]
+      summary: Customer creates a booking
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateBookingRequest"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Booking"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Service or option not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /bookings/payment-intent:
+    post:
+      operationId: createBookingPaymentIntent
+      tags: [bookings]
+      summary: Create a draft booking and a Stripe destination-charge PaymentIntent
+      description: |
+        Creates a `pending` booking row and a PaymentIntent with
+        `transfer_data.destination` set to the SP's Connect account and
+        `application_fee_amount` set to the 8% platform fee. Returns the
+        `client_secret` so the mobile client can present Stripe PaymentSheet.
+
+        Fails with 409 (`reason: provider_not_payable`) if the target
+        provider has not finished Stripe Connect onboarding.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateBookingRequest"
+      responses:
+        "201":
+          description: PaymentIntent created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateBookingPaymentIntentResponse"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Service or option not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Provider not payable (Connect onboarding incomplete)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /bookings/{id}/refund:
+    post:
+      operationId: refundBooking
+      tags: [bookings]
+      summary: Refund a paid booking in full (admin or owning SP)
+      description: |
+        Issues a Stripe refund with `reverse_transfer` and
+        `refund_application_fee` so customer, SP, and platform all return to
+        zero. Marks the booking `cancelled` and notifies the customer.
+        Idempotent — calling on an already-refunded booking returns the
+        existing refund id.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Refund completed (or already done)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BookingRefundResult"
+        "400":
+          description: Booking has no payment to refund
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Booking not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "502":
+          description: Stripe refund failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /bookings/{id}/refund-request:
+    post:
+      operationId: requestBookingRefund
+      tags: [bookings]
+      summary: Customer asks for a refund on their booking (Phase 3 #2)
+      description: |
+        Customer-only. Stamps `refundRequestedAt`/`refundReason` on the
+        booking and notifies all admins + the SP owner. Eligibility: caller
+        owns the booking, it was paid (`paymentIntentId` set), not yet
+        refunded, no existing pending request, and status is `confirmed` or
+        `completed`.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RefundRequestBody"
+      responses:
+        "201":
+          description: Refund request recorded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RefundRequestResult"
+        "400":
+          description: Booking not eligible (unpaid, wrong status, already refunded)
+          content: { application/json: { schema: { $ref: "#/components/schemas/ErrorResponse" } } }
+        "401":
+          description: Unauthenticated
+          content: { application/json: { schema: { $ref: "#/components/schemas/ErrorResponse" } } }
+        "403":
+          description: Forbidden (not the booking's customer)
+          content: { application/json: { schema: { $ref: "#/components/schemas/ErrorResponse" } } }
+        "404":
+          description: Booking not found
+          content: { application/json: { schema: { $ref: "#/components/schemas/ErrorResponse" } } }
+        "409":
+          description: A refund request is already on file, or a card dispute is open on this booking
+          content: { application/json: { schema: { $ref: "#/components/schemas/ErrorResponse" } } }
+
+  /bookings/{id}/refund-request/decide:
+    post:
+      operationId: decideBookingRefundRequest
+      tags: [bookings]
+      summary: Admin approves or denies a customer's refund request (Phase 3 #2)
+      description: |
+        Admin-only. Approval funnels through the same Stripe refund path as
+        `POST /bookings/{id}/refund` (full refund, status='cancelled',
+        notifies the customer). Denial just stamps the decision fields and
+        notifies the customer with the admin's reason.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RefundDecideBody"
+      responses:
+        "200":
+          description: Decision recorded (refund executed if approved)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RefundDecideResult"
+        "400":
+          description: No request on file, or invalid body
+          content: { application/json: { schema: { $ref: "#/components/schemas/ErrorResponse" } } }
+        "401":
+          description: Unauthenticated
+          content: { application/json: { schema: { $ref: "#/components/schemas/ErrorResponse" } } }
+        "403":
+          description: Not an admin
+          content: { application/json: { schema: { $ref: "#/components/schemas/ErrorResponse" } } }
+        "404":
+          description: Booking not found
+          content: { application/json: { schema: { $ref: "#/components/schemas/ErrorResponse" } } }
+        "409":
+          description: Request already decided
+          content: { application/json: { schema: { $ref: "#/components/schemas/ErrorResponse" } } }
+        "502":
+          description: Stripe refund failed (approval path only)
+          content: { application/json: { schema: { $ref: "#/components/schemas/ErrorResponse" } } }
+
+  /admin/metrics:
+    get:
+      operationId: getAdminMetrics
+      tags: [admin]
+      summary: Operational metrics for the platform owner (Phase 3 #9)
+      description: GMV, MRR by tier, conversion funnel, churn snapshot, and top categories. All money in integer cents.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Metrics payload
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminMetrics"
+        "401": { description: Unauthenticated }
+        "403": { description: Not an admin }
+
+  /admin/audit-log:
+    get:
+      operationId: getAdminAuditLog
+      tags: [admin]
+      summary: Recent audit-log entries (Phase 3 #10)
+      description: |
+        Returns the most recent rows from `audit_log`, newest first. Optionally filter
+        by `entityType` and/or `entityId` to scope the feed to a single entity's history.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+        - name: entityType
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [service, service_option, booking, biz_account, business]
+        - name: entityId
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Audit-log entries
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminAuditLogResponse"
+        "401": { description: Unauthenticated }
+        "403": { description: Not an admin }
+
+  /admin/stripe-webhook-dead-letter:
+    get:
+      operationId: getAdminStripeWebhookDeadLetter
+      tags: [admin]
+      summary: Stripe webhook dead-letter queue (TD-3)
+      description: |
+        Returns Stripe webhook events whose handler threw. Each row stores the
+        full `Stripe.Event` payload so it can be replayed without asking
+        Stripe to redeliver. Filterable by status (default `pending`).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [pending, resolved, ignored, all]
+            default: pending
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+      responses:
+        "200":
+          description: Dead-letter entries
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminStripeWebhookDeadLetterResponse"
+        "401": { description: Unauthenticated }
+        "403": { description: Not an admin }
+
+  /admin/stripe-webhook-dead-letter/{id}/retry:
+    post:
+      operationId: retryAdminStripeWebhookDeadLetter
+      tags: [admin]
+      summary: Re-dispatch a dead-letter event (TD-3)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Replay succeeded; row marked resolved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  status: { type: string }
+                required: [ok, status]
+        "404": { description: Not found }
+        "409": { description: Already resolved }
+        "500":
+          description: Replay failed; row stays pending with updated lastError
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  error: { type: string }
+                required: [ok, error]
+
+  /admin/stripe-webhook-dead-letter/{id}/ignore:
+    post:
+      operationId: ignoreAdminStripeWebhookDeadLetter
+      tags: [admin]
+      summary: Mark a dead-letter row as ignored (TD-3)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Row marked ignored
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  status: { type: string }
+                required: [ok, status]
+        "404": { description: Not found }
+        "409": { description: Already resolved }
+
+  /admin/stripe-webhook-dead-letter/{id}/reviews:
+    post:
+      operationId: recordAdminStripePaymentReview
+      tags: [admin]
+      summary: Append an admin manual review without changing queue or payment state
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminStripeManualReviewInput"
+      responses:
+        "201":
+          description: Immutable review recorded with server-derived reviewer and time
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminStripeManualReview"
+        "400": { description: "Invalid outcome or note, or not a duplicate payment" }
+        "401": { description: Unauthenticated }
+        "403": { description: Not an admin }
+        "404": { description: Entry not found }
+
+  /admin/email-outbox:
+    get:
+      operationId: getAdminEmailOutbox
+      tags: [admin]
+      summary: Email outbox — provider notification emails with retry state (Task 7)
+      description: |
+        Every provider notification email is persisted here before the first
+        send attempt. Failed sends are retried automatically with backoff;
+        after the attempt budget is exhausted the row becomes `failed`.
+        Filterable by status (default `failed`). Bodies are not returned.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [pending, sent, failed, dismissed, all]
+            default: failed
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+      responses:
+        "200":
+          description: Outbox entries
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminEmailOutboxResponse"
+        "401": { description: Unauthenticated }
+        "403": { description: Not an admin }
+
+  /admin/email-outbox/{id}/retry:
+    post:
+      operationId: retryAdminEmailOutbox
+      tags: [admin]
+      summary: Retry a failed/pending outbox email immediately (Task 7)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Send succeeded; row marked sent
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  status: { type: string }
+                required: [ok, status]
+        "404": { description: Not found }
+        "409": { description: Not retryable (already sent/dismissed) }
+        "502":
+          description: Send failed again; row keeps updated lastError
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  error: { type: string }
+                required: [ok, error]
+
+  /admin/email-outbox/{id}/dismiss:
+    post:
+      operationId: dismissAdminEmailOutbox
+      tags: [admin]
+      summary: Dismiss a failed outbox email so it is no longer retried (Task 7)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Row marked dismissed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  status: { type: string }
+                required: [ok, status]
+        "404": { description: Not found }
+        "409": { description: Already sent or dismissed }
+
+  /admin/refund-requests:
+    get:
+      operationId: listPendingRefundRequests
+      tags: [admin]
+      summary: Admin queue of pending refund requests (Phase 3 #2)
+      description: Returns booking rows with an open refund request — `refundRequestedAt` set and `refundDecision` null.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Pending refund requests, newest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Booking"
+        "401":
+          description: Unauthenticated
+          content: { application/json: { schema: { $ref: "#/components/schemas/ErrorResponse" } } }
+        "403":
+          description: Not an admin
+          content: { application/json: { schema: { $ref: "#/components/schemas/ErrorResponse" } } }
+
+  /bookings/{id}/cancellation-quote:
+    get:
+      operationId: getCancellationQuote
+      tags: [bookings]
+      summary: Preview the refund a customer would get if they cancelled this booking now
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Cancellation quote (or terminal-state notice)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CancellationQuote"
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Forbidden — booking is not yours
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Booking not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /bookings/{id}:
+    patch:
+      operationId: updateBookingStatus
+      tags: [bookings]
+      summary: Update a booking's status (customer cancels, SP confirms/completes/cancels, admin any)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateBookingStatusRequest"
+      responses:
+        "200":
+          description: Updated booking
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Booking"
+        "400":
+          description: Illegal status transition
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Booking not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /blocked-slots:
+    get:
+      operationId: listBlockedSlots
+      tags: [scheduling]
+      summary: List blocked slots for a business in a date range
+      parameters:
+        - name: businessId
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: from
+          in: query
+          required: false
+          description: Inclusive YYYY-MM-DD
+          schema:
+            type: string
+        - name: to
+          in: query
+          required: false
+          description: Inclusive YYYY-MM-DD
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Blocked slots
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/BlockedSlot"
+    post:
+      operationId: createBlockedSlot
+      tags: [scheduling]
+      summary: SP blocks a date/time range on their own calendar
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateBlockedSlotRequest"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BlockedSlot"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /blocked-slots/{id}:
+    delete:
+      operationId: deleteBlockedSlot
+      tags: [scheduling]
+      summary: SP removes a blocked slot from their calendar
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Deleted
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /availability:
+    get:
+      operationId: getAvailability
+      tags: [scheduling]
+      summary: Compute available time slots for a service on a date
+      parameters:
+        - name: serviceId
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: date
+          in: query
+          required: true
+          description: YYYY-MM-DD
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Availability
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Availability"
+        "404":
+          description: Service not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /auth/customer:
+    post:
+      operationId: loginCustomer
+      tags: [auth]
+      summary: Frictionless customer signup-or-login (email + name)
+      description: |
+        Upserts a customer user keyed by email. No password — matches the existing
+        mobile UX where customers tap "continue" with just name + email.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CustomerLoginRequest"
+      responses:
+        "200":
+          description: Authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /auth/business/login:
+    post:
+      operationId: loginBusiness
+      tags: [auth]
+      summary: Service provider login (email + password)
+      description: Verifies password against the bcrypt hash stored on the SP's biz_account.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BusinessLoginRequest"
+      responses:
+        "200":
+          description: Authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "401":
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /auth/business/forgot-password:
+    post:
+      operationId: forgotBusinessPassword
+      tags: [auth]
+      summary: Request a password-reset email for a service-provider account
+      description: |
+        Always returns 200 regardless of whether the email exists, to avoid
+        account enumeration. When the account exists, a single-use reset link
+        (valid 1 hour) is emailed to it.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ForgotPasswordRequest"
+      responses:
+        "200":
+          description: Accepted (whether or not the account exists)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /auth/business/reset-password:
+    post:
+      operationId: resetBusinessPassword
+      tags: [auth]
+      summary: Set a new service-provider password using an emailed reset token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResetPasswordRequest"
+      responses:
+        "200":
+          description: Password updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "400":
+          description: Invalid or expired token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /auth/admin:
+    post:
+      operationId: loginAdmin
+      tags: [auth]
+      summary: Admin login via email + password (and optional TOTP).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminLoginRequest"
+      responses:
+        "200":
+          description: Authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "401":
+          description: Invalid email, password, or TOTP code
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "423":
+          description: Account temporarily locked after repeated failed attempts
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminLockedResponse"
+
+  /auth/admin/change-password:
+    post:
+      operationId: adminChangePassword
+      tags: [auth]
+      summary: Admin changes their own password.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminChangePasswordRequest"
+      responses:
+        "200":
+          description: Password updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "401":
+          description: Current password is incorrect
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /auth/admin/totp/enroll:
+    post:
+      operationId: adminTotpEnroll
+      tags: [auth]
+      summary: Begin TOTP enrollment; returns secret + otpauth URL for the authenticator app.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Enrollment started — admin must call /confirm with a valid code.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminTotpEnrollment"
+        "409":
+          description: TOTP already enrolled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /auth/admin/totp/confirm:
+    post:
+      operationId: adminTotpConfirm
+      tags: [auth]
+      summary: Finish TOTP enrollment by submitting a valid code.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminTotpConfirmRequest"
+      responses:
+        "200":
+          description: TOTP confirmed; future logins must include a code.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "401":
+          description: Invalid code
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: No pending enrollment, or already confirmed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /auth/admin/totp/disable:
+    post:
+      operationId: adminTotpDisable
+      tags: [auth]
+      summary: Disable TOTP after re-verifying password.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminTotpDisableRequest"
+      responses:
+        "200":
+          description: TOTP disabled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "401":
+          description: Password is incorrect
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /auth/me:
+    get:
+      operationId: getCurrentUser
+      tags: [auth]
+      summary: Get current authenticated user
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Current user
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user:
+                    $ref: "#/components/schemas/AuthUser"
+                required: [user]
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /notifications:
+    get:
+      operationId: listNotifications
+      tags: [notifications]
+      summary: List notifications for the current user (newest first)
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Notifications
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Notification"
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /notifications/{id}/read:
+    patch:
+      operationId: markNotificationRead
+      tags: [notifications]
+      summary: Mark a single notification as read
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Updated notification
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Notification"
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Forbidden — not your notification
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Notification not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /notifications/read-all:
+    patch:
+      operationId: markAllNotificationsRead
+      tags: [notifications]
+      summary: Mark every unread notification for the current user as read
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Count of updated rows
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  updated: { type: integer }
+                required: [updated]
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /reviews:
+    post:
+      operationId: createReview
+      tags: [reviews]
+      summary: Customer leaves a 1–5 star review for a completed booking
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateReviewRequest"
+      responses:
+        "201":
+          description: Review created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BookingReview"
+        "400":
+          description: Invalid input or booking is not completed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Forbidden — not your booking
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Booking not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Booking has already been reviewed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /bookings/{id}/review:
+    get:
+      operationId: getBookingReview
+      tags: [reviews]
+      summary: Fetch the review attached to a booking, if any
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Review for this booking
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BookingReview"
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Forbidden — not your booking
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Booking or review not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /me/push-token:
+    put:
+      operationId: registerPushToken
+      tags: [notifications]
+      summary: Store/clear the current user's Expo push token
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterPushTokenRequest"
+      responses:
+        "204":
+          description: Stored
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /me/biz-account:
+    get:
+      operationId: getMyBizAccount
+      tags: [auth]
+      summary: Authenticated SP reads their own biz_account status/meeting snapshot
+      description: |
+        Business-role only. Returns the same minimal snapshot as the public status
+        endpoint (status, paidAt, meeting time/location/duration) for the caller's
+        own application, resolved from the auth token's businessId. Used by the
+        provider dashboard to surface a still-upcoming meeting after login.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Current status snapshot
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BizAccountStatusResponse"
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Forbidden — caller is not a service provider
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Biz account not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /me/subscription:
+    get:
+      operationId: getMySubscription
+      tags: [subscriptions]
+      summary: Get the SP's current subscription state, plan limits, and a Stripe billing-portal URL
+      description: |
+        Authenticated SP only. Returns the plan tier, whether the subscription is currently entitling
+        the SP to perks, current usage vs the plan's service-count cap, and (when a Stripe customer
+        exists) a one-shot billing-portal URL the mobile client can open to manage payment methods,
+        view invoices, or cancel.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Subscription state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MySubscriptionResponse"
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Forbidden — caller is not a service provider
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /me/subscription/checkout:
+    post:
+      operationId: createMySubscriptionCheckout
+      tags: [subscriptions]
+      summary: Start a Stripe Checkout session to subscribe to (or upgrade/downgrade) a plan
+      description: |
+        Authenticated SP only. Looks up the live Stripe price for the requested plan tier from the
+        sync'd `stripe.products` table, creates (or reuses) a Stripe customer for the SP, and
+        returns a hosted Checkout URL the mobile app can open via WebBrowser.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateSubscriptionCheckoutRequest"
+      responses:
+        "200":
+          description: Checkout session created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SubscriptionCheckoutResponse"
+        "400":
+          description: Bad request (unknown plan or missing Stripe price)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Forbidden — caller is not a service provider
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /me/stripe/connect/account:
+    get:
+      operationId: getMyStripeConnectAccount
+      tags: [stripeConnect]
+      summary: Get the SP's Stripe Connect Express account state
+      description: |
+        Authenticated SP only. Returns the current Connect account id (or null if
+        onboarding has never been started), a high-level status, the live
+        charges/payouts flags, and any requirements Stripe is currently asking
+        the SP to satisfy. Re-fetches from Stripe on every call so the UI
+        reflects reality without waiting on the account.updated webhook.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Connect account state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StripeConnectAccountResponse"
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Forbidden — caller is not a service provider
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    post:
+      operationId: createMyStripeConnectAccount
+      tags: [stripeConnect]
+      summary: Ensure a Stripe Connect Express account exists for the SP
+      description: |
+        Authenticated SP only. Idempotent: if `stripeAccountId` is already set
+        on the business, returns the existing account state refreshed from
+        Stripe. Otherwise creates a new Express account, persists the id, and
+        returns the initial state (charges/payouts disabled until onboarding
+        completes).
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Connect account ensured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StripeConnectAccountResponse"
+        "400":
+          description: Bad request (e.g. missing email on file)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Forbidden — caller is not a service provider
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /me/stripe/connect/onboarding-link:
+    post:
+      operationId: createMyStripeConnectOnboardingLink
+      tags: [stripeConnect]
+      summary: Mint a hosted Stripe Express onboarding URL for the SP
+      description: |
+        Authenticated SP only. Auto-creates the Connect account if missing.
+        Returns a one-shot URL that the mobile client opens via WebBrowser; the
+        URL expires ~5 minutes after creation. After the SP completes (or
+        cancels) the form, Stripe redirects to a static "you can close this
+        window" page on the API server, and mobile re-fetches account state.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Account link created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StripeConnectOnboardingLinkResponse"
+        "400":
+          description: Bad request (missing email on file)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Forbidden — caller is not a service provider
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /me/earnings:
+    get:
+      operationId: getMyEarnings
+      tags: [stripeConnect]
+      summary: SP earnings dashboard (lifetime + 30-day rollup, Stripe pending balance, recent payments)
+      description: |
+        Authenticated SP only. Aggregates the caller's paid bookings (those
+        with a `paymentIntentId`) into lifetime + 30-day buckets, fetches the
+        SP's Stripe Connect balance, and returns the 25 most-recent paid
+        bookings. All money fields are integer USD cents. `balance` is null
+        when the SP has not finished Connect onboarding or Stripe is
+        temporarily unreachable.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Earnings dashboard payload
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EarningsResponse"
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Forbidden — caller is not a service provider
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /me/earnings/export.csv:
+    get:
+      operationId: exportMyEarningsCsv
+      tags: [stripeConnect]
+      summary: Download every paid booking as CSV
+      description: |
+        Authenticated SP only. Returns text/csv with one row per paid
+        booking, newest first, with USD dollar columns suitable for direct
+        import into Excel/Google Sheets.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: CSV download
+          content:
+            text/csv:
+              schema:
+                type: string
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Forbidden — caller is not a service provider
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /bookings/{id}/messages:
+    get:
+      operationId: listBookingMessages
+      tags: [messages]
+      summary: List the chat thread for a booking (oldest first)
+      description: |
+        Returns every message on the per-booking thread, oldest first.
+        Authz: caller must be the booking's customer OR the SP that owns the
+        business. Optional `?after=<ISO timestamp>` returns only messages
+        strictly newer than that timestamp (used by mobile polling).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Messages
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Message"
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "403":
+          description: Forbidden — not a participant
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "404":
+          description: Booking not found
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+    post:
+      operationId: sendBookingMessage
+      tags: [messages]
+      summary: Append a message to the thread
+      description: |
+        Appends one message to the booking's thread and notifies the other
+        participant (in-app + Expo push when available). Body trimmed and
+        capped at 2000 characters.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SendMessageRequest"
+      responses:
+        "201":
+          description: Created message
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+        "400":
+          description: Empty or oversized body
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "403":
+          description: Forbidden — not a participant
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "404":
+          description: Booking not found
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /bookings/{id}/messages/read:
+    post:
+      operationId: markBookingMessagesRead
+      tags: [messages]
+      summary: Mark every message from the OTHER party as read
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Count of rows marked read
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  updated: { type: integer }
+                required: [updated]
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "403":
+          description: Forbidden — not a participant
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "404":
+          description: Booking not found
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /me/conversations:
+    get:
+      operationId: listMyConversations
+      tags: [messages]
+      summary: List every booking the caller has a thread for, with last-message preview + unread count
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Conversations
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Conversation"
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "403":
+          description: Forbidden — admin tokens have no conversations
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /me/calendar:
+    get:
+      operationId: getMyCalendar
+      tags: [calendar]
+      summary: SP fetches their iCal feed URL + external calendar sync state
+      description: |
+        Authenticated SP only. Returns the SP's outbound iCal feed URL
+        (null if no token has been minted yet) plus the inbound external
+        calendar URL, last sync timestamp, and last sync error if any.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Calendar sync settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MyCalendarResponse"
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "403":
+          description: Forbidden — caller is not an SP
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /me/calendar/regenerate:
+    post:
+      operationId: regenerateMyCalendarToken
+      tags: [calendar]
+      summary: Mint a fresh iCal token (invalidates the previous feed URL)
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: New feed URL
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [feedUrl]
+                properties:
+                  feedUrl: { type: string, format: uri }
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "403":
+          description: Forbidden — caller is not an SP
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /me/calendar/external:
+    put:
+      operationId: setMyExternalCalendar
+      tags: [calendar]
+      summary: Save the inbound iCal URL the SP wants pulled in as blocked time
+      description: HTTPS or webcal URLs only. Does NOT trigger a sync — call POST /me/calendar/external/sync next.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetMyExternalCalendarRequest"
+      responses:
+        "204": { description: Saved }
+        "400":
+          description: Invalid URL
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "403":
+          description: Forbidden — caller is not an SP
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+    delete:
+      operationId: deleteMyExternalCalendar
+      tags: [calendar]
+      summary: Clear the inbound URL and remove all imported blocked slots
+      security:
+        - bearerAuth: []
+      responses:
+        "204": { description: Cleared }
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "403":
+          description: Forbidden — caller is not an SP
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /me/calendar/external/sync:
+    post:
+      operationId: syncMyExternalCalendar
+      tags: [calendar]
+      summary: Fetch + parse the inbound URL and replace all imported blocks
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Sync complete
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [importedBlocks, syncedAt]
+                properties:
+                  importedBlocks: { type: integer }
+                  syncedAt: { type: string, format: date-time }
+        "400":
+          description: No external URL configured
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "403":
+          description: Forbidden — caller is not an SP
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "502":
+          description: External calendar fetch or parse failed
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /me/business:
+    patch:
+      operationId: updateMyBusiness
+      tags: [scheduling]
+      summary: SP edits their own business profile (hours, contact, vacation mode)
+      description: |
+        Authenticated SP only. Partial update — only fields explicitly sent are
+        modified. Vacation fields must be sent together (`vacationFrom` +
+        `vacationUntil` both set) to enable, or both `null` to clear. Hours
+        validation requires endHour > startHour.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateMyBusinessRequest"
+      responses:
+        "200":
+          description: Updated business
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Business"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Forbidden — caller is not an SP
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Business no longer exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /biz-accounts:
+    get:
+      operationId: listBizAccounts
+      tags: [auth]
+      summary: Admin lists biz_account applications, optionally filtered by status
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [awaiting_payment, pending, accepted, approved, rejected]
+      responses:
+        "200":
+          description: Biz accounts
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/BizAccount"
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Forbidden — admin only
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    post:
+      operationId: createBizAccount
+      tags: [auth]
+      summary: SP applies (public — no auth). Creates user + biz_account in awaiting_payment state and a Stripe Checkout Session for the configured application fee.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateBizAccountRequest"
+      responses:
+        "201":
+          description: Application created and checkout session ready
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateBizAccountResponse"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Email already in use or the displayed application fee is no longer current
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "502":
+          description: Stripe Checkout Session could not be created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /application-fees:
+    get:
+      operationId: getApplicationFees
+      tags: [auth]
+      summary: Public configured one-time provider fees, shared with Stripe Checkout.
+      responses:
+        "200":
+          description: Current non-refundable fees in integer cents
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApplicationFees"
+
+  /biz-accounts/{id}/status:
+    get:
+      operationId: getBizAccountStatus
+      tags: [auth]
+      summary: Public status check used by the payment-return screen to poll for the webhook flip from awaiting_payment → pending.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Current status snapshot
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BizAccountStatusResponse"
+        "404":
+          description: Application not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /biz-accounts/{id}/approve:
+    post:
+      operationId: approveBizAccount
+      tags: [auth]
+      summary: Admin finalizes an accepted application — creates the public businesses row and flips status to approved (override; the $60 onboarding payment normally does this automatically).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ApproveBizAccountRequest"
+      responses:
+        "200":
+          description: Approved; biz_account flipped + businesses row created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApproveBizAccountResult"
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Forbidden — admin only
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Application not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Application not in `accepted` state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /biz-accounts/{id}/accept:
+    post:
+      operationId: acceptBizAccount
+      tags: [auth]
+      summary: Admin accepts a paid application after the interview — moves it to `accepted` so the applicant can pay the onboarding fee.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BizAccount"
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Forbidden — admin only
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Application not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Application not in `pending` state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /biz-accounts/{id}/onboarding-checkout:
+    post:
+      operationId: createOnboardingCheckout
+      tags: [auth]
+      summary: Create a Stripe Checkout Session for the configured onboarding fee. Public — the application id acts as a capability token.
+      description: Send the onboarding amount displayed to the applicant. If it differs from current configuration, refresh application-fees and require another deliberate payment click; never automatically retry checkout.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OnboardingCheckoutInput"
+      responses:
+        "200":
+          description: Checkout session created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OnboardingCheckoutResponse"
+        "400":
+          description: Invalid expected onboarding amount
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Application not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Application not accepted, or the displayed onboarding fee has changed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "502":
+          description: Could not create Stripe session
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: Checkout is temporarily busy or Stripe timed out. Wait before deliberately retrying; the same attempt is reused.
+          headers:
+            Retry-After:
+              description: Minimum wait before retrying, in seconds
+              schema:
+                type: integer
+                minimum: 1
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /biz-accounts/{id}/reject:
+    post:
+      operationId: rejectBizAccount
+      tags: [auth]
+      summary: Admin rejects an application — non-refunding (the $19 application fee is retained).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RejectBizAccountRequest"
+      responses:
+        "200":
+          description: Rejected
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BizAccount"
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Forbidden — admin only
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Application not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /biz-accounts/{id}:
+    patch:
+      operationId: updateBizAccount
+      tags: [auth]
+      summary: Admin changes status, or SP edits own profile
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateBizAccountRequest"
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BizAccount"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+      required: [status]
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required: [error]
+
+    AdminMetricsTierBucket:
+      type: object
+      properties:
+        count: { type: integer }
+        mrrCents: { type: integer }
+      required: [count, mrrCents]
+
+    AdminAuditLogEntry:
+      type: object
+      properties:
+        id: { type: string }
+        at: { type: string, format: date-time }
+        actorId: { type: string, nullable: true }
+        actorRole: { type: string, nullable: true }
+        actorLabel: { type: string, nullable: true }
+        entityType:
+          type: string
+          enum: [service, service_option, booking, biz_account, business]
+        entityId: { type: string }
+        action: { type: string }
+        summary: { type: string }
+        metadata:
+          type: object
+          additionalProperties: true
+          nullable: true
+      required: [id, at, actorId, actorRole, actorLabel, entityType, entityId, action, summary, metadata]
+
+    AdminAuditLogResponse:
+      type: object
+      properties:
+        entries:
+          type: array
+          items:
+            $ref: "#/components/schemas/AdminAuditLogEntry"
+      required: [entries]
+
+    AdminStripePaymentReview:
+      type: object
+      description: Read-only Stripe review links. Null URLs mean the stored event cannot safely establish the Stripe mode or session.
+      properties:
+        mode:
+          type: [string, "null"]
+          enum: [test, live, null]
+        originalSessionId: { type: string }
+        extraSessionId: { type: string }
+        originalDashboardUrl: { type: [string, "null"] }
+        extraDashboardUrl: { type: [string, "null"] }
+      required: [mode, originalSessionId, extraSessionId, originalDashboardUrl, extraDashboardUrl]
+
+    AdminStripeManualReviewInput:
+      type: object
+      additionalProperties: false
+      properties:
+        outcome:
+          type: string
+          enum: [needs_follow_up, no_action_needed, handled_in_stripe]
+        note:
+          type: string
+          maxLength: 500
+          description: Optional non-sensitive operational note. No card details, credentials, or personal information.
+      required: [outcome]
+
+    AdminStripeManualReview:
+      type: object
+      properties:
+        id: { type: string }
+        outcome:
+          type: string
+          enum: [needs_follow_up, no_action_needed, handled_in_stripe]
+        reviewerId: { type: string }
+        reviewerName: { type: string }
+        reviewedAt: { type: string, format: date-time }
+        note: { type: [string, "null"] }
+      required: [id, outcome, reviewerId, reviewerName, reviewedAt, note]
+
+    AdminStripeWebhookDeadLetterEntry:
+      type: object
+      properties:
+        id: { type: string }
+        eventId: { type: string }
+        eventType: { type: string }
+        handlerName:
+          type: string
+          enum: [subscription_mirror, connect_mirror, pi_succeeded, pi_failed, dispute, biz_account_paid]
+        status:
+          type: string
+          enum: [pending, resolved, ignored]
+        attempts: { type: integer }
+        lastError: { type: string }
+        paymentReview:
+          $ref: "#/components/schemas/AdminStripePaymentReview"
+        manualReviews:
+          type: array
+          description: Append-only manual review history, newest first. Empty means no recorded review, including historical dismissals.
+          items:
+            $ref: "#/components/schemas/AdminStripeManualReview"
+        lastAttemptAt: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time }
+        resolvedAt:
+          type: string
+          format: date-time
+          nullable: true
+      required: [id, eventId, eventType, handlerName, status, attempts, lastError, manualReviews, lastAttemptAt, createdAt, resolvedAt]
+
+    AdminStripeWebhookDeadLetterResponse:
+      type: object
+      properties:
+        entries:
+          type: array
+          items:
+            $ref: "#/components/schemas/AdminStripeWebhookDeadLetterEntry"
+      required: [entries]
+
+    AdminEmailOutboxEntry:
+      type: object
+      properties:
+        id: { type: string }
+        toEmail: { type: string }
+        subject: { type: string }
+        kind: { type: string }
+        status:
+          type: string
+          enum: [pending, sent, failed, dismissed]
+        attempts: { type: integer }
+        lastError:
+          type: string
+          nullable: true
+        nextAttemptAt: { type: string, format: date-time }
+        sentAt:
+          type: string
+          format: date-time
+          nullable: true
+        createdAt: { type: string, format: date-time }
+      required: [id, toEmail, subject, kind, status, attempts, lastError, nextAttemptAt, sentAt, createdAt]
+
+    AdminEmailOutboxResponse:
+      type: object
+      properties:
+        entries:
+          type: array
+          items:
+            $ref: "#/components/schemas/AdminEmailOutboxEntry"
+      required: [entries]
+
+    AdminMetrics:
+      type: object
+      properties:
+        gmv:
+          type: object
+          properties:
+            lifetimeCents: { type: integer }
+            last30Cents: { type: integer }
+            lifetimePlatformFeeCents: { type: integer }
+            last30PlatformFeeCents: { type: integer }
+          required: [lifetimeCents, last30Cents, lifetimePlatformFeeCents, last30PlatformFeeCents]
+        subscriptions:
+          type: object
+          properties:
+            totalActive: { type: integer }
+            totalInactive: { type: integer }
+            mrrCents: { type: integer }
+            byTier:
+              type: object
+              properties:
+                starter_gigger: { $ref: "#/components/schemas/AdminMetricsTierBucket" }
+                pro_business: { $ref: "#/components/schemas/AdminMetricsTierBucket" }
+              required: [starter_gigger, pro_business]
+          required: [totalActive, totalInactive, mrrCents, byTier]
+        funnel:
+          type: object
+          properties:
+            applications: { type: integer }
+            paid: { type: integer }
+            approved: { type: integer }
+            activeWithBooking: { type: integer }
+          required: [applications, paid, approved, activeWithBooking]
+        churn:
+          type: object
+          properties:
+            activeNow: { type: integer }
+            inactiveNow: { type: integer }
+          required: [activeNow, inactiveNow]
+        topCategories:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              name: { type: string }
+              bookings: { type: integer }
+              gmvCents: { type: integer }
+            required: [id, name, bookings, gmvCents]
+        emailOutbox:
+          type: object
+          description: Task #13 — proactive signal for permanently-failed provider emails.
+          properties:
+            failedCount: { type: integer }
+          required: [failedCount]
+      required: [gmv, subscriptions, funnel, churn, topCategories, emailOutbox]
+
+    SetMyExternalCalendarRequest:
+      type: object
+      properties:
+        url: { type: string }
+      required: [url]
+
+    MyCalendarResponse:
+      type: object
+      properties:
+        feedUrl:
+          type: string
+          format: uri
+          nullable: true
+        externalCalendarUrl:
+          type: string
+          nullable: true
+        lastSyncAt:
+          type: string
+          format: date-time
+          nullable: true
+        lastError:
+          type: string
+          nullable: true
+      required: [feedUrl, externalCalendarUrl, lastSyncAt, lastError]
+
+    AuthUser:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        email: { type: string }
+        role:
+          type: string
+          enum: [customer, business, admin]
+        businessId:
+          type: string
+          nullable: true
+      required: [id, name, email, role]
+
+    AuthResponse:
+      type: object
+      properties:
+        token: { type: string }
+        user:
+          $ref: "#/components/schemas/AuthUser"
+      required: [token, user]
+
+    CustomerLoginRequest:
+      type: object
+      properties:
+        email:
+          type: string
+          format: email
+        name: { type: string }
+      required: [email, name]
+
+    BusinessLoginRequest:
+      type: object
+      properties:
+        email:
+          type: string
+          format: email
+        password: { type: string }
+      required: [email, password]
+
+    ForgotPasswordRequest:
+      type: object
+      properties:
+        email:
+          type: string
+          format: email
+      required: [email]
+
+    ResetPasswordRequest:
+      type: object
+      properties:
+        token: { type: string, minLength: 1 }
+        password: { type: string, minLength: 8 }
+      required: [token, password]
+
+    AdminLoginRequest:
+      type: object
+      properties:
+        email: { type: string, format: email }
+        password: { type: string, minLength: 1 }
+        totpCode:
+          type: string
+          minLength: 6
+          maxLength: 6
+          description: Six-digit TOTP code; required iff the admin has enrolled TOTP.
+      required: [email, password]
+
+    AdminLockedResponse:
+      type: object
+      properties:
+        error: { type: string }
+        retryAfterSeconds: { type: integer }
+      required: [error, retryAfterSeconds]
+
+    AdminChangePasswordRequest:
+      type: object
+      properties:
+        currentPassword: { type: string, minLength: 1 }
+        newPassword: { type: string, minLength: 8 }
+      required: [currentPassword, newPassword]
+
+    AdminTotpEnrollment:
+      type: object
+      properties:
+        secret: { type: string, description: Base32 secret for manual entry. }
+        otpauthUrl: { type: string, description: otpauth:// URL for QR display. }
+      required: [secret, otpauthUrl]
+
+    AdminTotpConfirmRequest:
+      type: object
+      properties:
+        code: { type: string, minLength: 6, maxLength: 6 }
+      required: [code]
+
+    AdminTotpDisableRequest:
+      type: object
+      properties:
+        password: { type: string, minLength: 1 }
+      required: [password]
+
+    OkResponse:
+      type: object
+      properties:
+        ok: { type: boolean }
+      required: [ok]
+
+    Category:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        icon: { type: string }
+        color: { type: string }
+        serviceCount: { type: integer }
+        active: { type: boolean }
+      required: [id, name, icon, color, serviceCount, active]
+
+    BusinessHours:
+      type: object
+      properties:
+        workDays:
+          type: array
+          items:
+            type: integer
+        startHour: { type: integer }
+        endHour: { type: integer }
+      required: [workDays, startHour, endHour]
+
+    BusinessEmployee:
+      type: object
+      properties:
+        id: { type: integer }
+        specialty:
+          type: string
+          nullable: true
+      required: [id]
+
+    Business:
+      type: object
+      properties:
+        id: { type: string }
+        ownerId: { type: string }
+        name: { type: string }
+        description: { type: string }
+        categoryId: { type: string }
+        logoUrl:
+          type: string
+          nullable: true
+        coverUrl:
+          type: string
+          nullable: true
+        rating:
+          type: string
+          description: Decimal as string
+        reviewCount: { type: integer }
+        subscriptionActive: { type: boolean }
+        subscriptionPlan:
+          $ref: "#/components/schemas/PlanTier"
+        phone: { type: string }
+        location: { type: string }
+        joinedDate: { type: string }
+        serviceCount: { type: integer }
+        hours:
+          oneOf:
+            - $ref: "#/components/schemas/BusinessHours"
+            - type: "null"
+        employees:
+          type: array
+          description: Always populated on both list and detail responses (eager join).
+          items:
+            $ref: "#/components/schemas/BusinessEmployee"
+        stripeAccountStatus:
+          type: string
+          enum: [none, pending, active, restricted]
+          description: |
+            Mirror of the SP's Stripe Connect account status. Customers can
+            only book when this is `active` AND `stripePayoutsEnabled` is true.
+        stripePayoutsEnabled:
+          type: boolean
+          description: |
+            Mirror of `account.payouts_enabled` from Stripe. Drives the
+            customer-facing "Book Now" gate — bookings cannot create a
+            PaymentIntent when this is false.
+        vacationFrom:
+          type: string
+          nullable: true
+          description: "Start of vacation/OOO window (YYYY-MM-DD), inclusive."
+        vacationUntil:
+          type: string
+          nullable: true
+          description: "End of vacation/OOO window (YYYY-MM-DD), inclusive."
+        vacationMessage:
+          type: string
+          nullable: true
+          description: "Optional message shown to customers when booking is blocked by vacation."
+        cancellationFullRefundHours:
+          type: integer
+          minimum: 0
+          maximum: 720
+          description: |
+            Cancellation policy — customer gets a 100% refund if they cancel
+            this many hours or more before the scheduled time. (Phase 3 #7.)
+        cancellationPartialRefundHours:
+          type: integer
+          minimum: 0
+          maximum: 720
+          description: |
+            Cancellation policy — customer gets `cancellationPartialRefundPercent`%
+            refund if they cancel within (`cancellationFullRefundHours` ..
+            `cancellationPartialRefundHours`] hours of the scheduled time.
+            Inside this window: no refund.
+        cancellationPartialRefundPercent:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: Partial-refund tier percentage (0–100).
+      required:
+        - id
+        - ownerId
+        - name
+        - description
+        - categoryId
+        - rating
+        - reviewCount
+        - subscriptionActive
+        - subscriptionPlan
+        - employees
+        - phone
+        - location
+        - joinedDate
+        - serviceCount
+        - stripeAccountStatus
+        - stripePayoutsEnabled
+        - cancellationFullRefundHours
+        - cancellationPartialRefundHours
+        - cancellationPartialRefundPercent
+
+    BusinessDetail:
+      allOf:
+        - $ref: "#/components/schemas/Business"
+        - type: object
+          properties:
+            employees:
+              type: array
+              items:
+                $ref: "#/components/schemas/BusinessEmployee"
+          required: [employees]
+
+    Service:
+      type: object
+      properties:
+        id: { type: string }
+        businessId: { type: string }
+        businessName: { type: string }
+        categoryId: { type: string }
+        title: { type: string }
+        description: { type: string }
+        rating:
+          type: string
+          description: Decimal as string
+        reviewCount: { type: integer }
+        startingPrice:
+          type: string
+          description: Decimal as string
+        tags:
+          type: array
+          items:
+            type: string
+        featured: { type: boolean }
+        requiredSpecialty:
+          type: string
+          nullable: true
+        options:
+          type: array
+          description: Always populated on both list and detail responses (eager join).
+          items:
+            $ref: "#/components/schemas/ServiceOption"
+      required:
+        - id
+        - businessId
+        - businessName
+        - categoryId
+        - title
+        - description
+        - rating
+        - reviewCount
+        - startingPrice
+        - tags
+        - featured
+        - options
+
+    ServiceOption:
+      type: object
+      properties:
+        id: { type: string }
+        serviceId: { type: string }
+        name: { type: string }
+        description: { type: string }
+        price:
+          type: string
+          description: Decimal as string
+        duration: { type: string }
+        defaultStartTime:
+          type: string
+          nullable: true
+          description: >-
+            For long-duration options (full-day / 8h+) the SP may pin the single
+            HH:MM (24h) start time customers can book at. Null = no override;
+            the standard 30-minute slot grid is used.
+      required: [id, serviceId, name, description, price, duration]
+
+    ServiceReview:
+      type: object
+      properties:
+        id: { type: string }
+        serviceId: { type: string }
+        authorName: { type: string }
+        rating: { type: integer }
+        comment: { type: string }
+        date: { type: string }
+      required: [id, serviceId, authorName, rating, comment, date]
+
+    BookingReview:
+      type: object
+      properties:
+        id: { type: string }
+        bookingId: { type: string }
+        customerId: { type: string }
+        customerName: { type: string }
+        serviceId: { type: string }
+        businessId: { type: string }
+        rating:
+          type: integer
+          minimum: 1
+          maximum: 5
+        comment: { type: string }
+        createdAt:
+          type: string
+          format: date-time
+      required: [id, bookingId, customerId, customerName, serviceId, businessId, rating, comment, createdAt]
+
+    CreateReviewRequest:
+      type: object
+      properties:
+        bookingId: { type: string }
+        rating:
+          type: integer
+          minimum: 1
+          maximum: 5
+        comment:
+          type: string
+          nullable: true
+      required: [bookingId, rating]
+
+    ServiceDetail:
+      allOf:
+        - $ref: "#/components/schemas/Service"
+        - type: object
+          properties:
+            options:
+              type: array
+              items:
+                $ref: "#/components/schemas/ServiceOption"
+            reviews:
+              type: array
+              items:
+                $ref: "#/components/schemas/ServiceReview"
+          required: [options, reviews]
+
+    Booking:
+      type: object
+      properties:
+        id: { type: string }
+        customerId: { type: string }
+        customerName: { type: string }
+        serviceId: { type: string }
+        businessId: { type: string }
+        businessName: { type: string }
+        serviceTitle: { type: string }
+        optionName: { type: string }
+        price:
+          type: string
+          description: Decimal as string
+        platformFee:
+          type: string
+          description: Decimal as string
+        total:
+          type: string
+          description: Decimal as string
+        status:
+          type: string
+          enum: [pending, confirmed, completed, cancelled]
+        scheduledDate: { type: string, description: "YYYY-MM-DD" }
+        scheduledTime:
+          type: string
+          nullable: true
+          description: "HH:MM 24h"
+        durationMinutes:
+          type: integer
+          nullable: true
+        paymentIntentId:
+          type: string
+          nullable: true
+          description: Stripe PaymentIntent id that funded this booking; null for legacy/free bookings.
+        refundId:
+          type: string
+          nullable: true
+          description: Stripe Refund id; set when the booking was refunded.
+        refundedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the booking was refunded; null otherwise.
+        refundRequestedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: Phase 3 #2 — when the customer asked for a refund; null if no request.
+        refundReason:
+          type: string
+          nullable: true
+          description: Customer's stated reason for requesting a refund.
+        refundDecision:
+          type: string
+          enum: [approved, denied]
+          nullable: true
+          description: Admin's decision on the refund request; null while pending.
+        refundDecidedAt:
+          type: string
+          format: date-time
+          nullable: true
+        refundDecisionReason:
+          type: string
+          nullable: true
+          description: Admin's note. Required for denials, optional for approvals.
+        disputeId:
+          type: string
+          nullable: true
+          description: Stripe `dp_…` id when the cardholder filed a chargeback.
+        disputeStatus:
+          type: string
+          nullable: true
+          description: Latest Stripe dispute.status (warning_needs_response, needs_response, won, lost, etc.).
+        disputeCreatedAt:
+          type: string
+          format: date-time
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        reviewed:
+          type: boolean
+          description: True when the customer has already submitted a review for this booking.
+        cancellationFullRefundHours:
+          type: integer
+          nullable: true
+          description: |
+            Snapshot of the SP's `cancellationFullRefundHours` at the time
+            this booking was created. Null on legacy bookings predating the
+            cancellation-policy feature; in that case the resolver falls
+            back to the business's live policy.
+        cancellationPartialRefundHours:
+          type: integer
+          nullable: true
+          description: Snapshot of `cancellationPartialRefundHours` at booking time.
+        cancellationPartialRefundPercent:
+          type: integer
+          nullable: true
+          description: Snapshot of `cancellationPartialRefundPercent` at booking time.
+        cancellationRefundCents:
+          type: integer
+          nullable: true
+          description: |
+            When the customer cancels under the policy, this records the
+            cents amount they actually received back. 0 means policy was
+            applied but the cancellation fell inside the no-refund window.
+            Null means the booking was cancelled by SP/admin (separate
+            refund flow) or hasn't been cancelled yet.
+      required:
+        - id
+        - customerId
+        - customerName
+        - serviceId
+        - businessId
+        - businessName
+        - serviceTitle
+        - optionName
+        - price
+        - platformFee
+        - total
+        - status
+        - scheduledDate
+        - createdAt
+        - reviewed
+
+    RefundRequestBody:
+      type: object
+      properties:
+        reason:
+          type: string
+          minLength: 10
+          maxLength: 1000
+          description: Customer's stated reason for the refund (10-1000 chars).
+      required: [reason]
+
+    RefundRequestResult:
+      type: object
+      description: Returned by POST /bookings/{id}/refund-request.
+      properties:
+        bookingId: { type: string }
+        refundRequestedAt: { type: string, format: date-time }
+        refundReason: { type: string }
+      required: [bookingId, refundRequestedAt, refundReason]
+
+    RefundDecideBody:
+      type: object
+      description: |
+        Admin's decision on a refund request. `reason` is required when
+        denying (≥ 5 chars), optional when approving.
+      properties:
+        decision:
+          type: string
+          enum: [approved, denied]
+        reason:
+          type: string
+          maxLength: 1000
+      required: [decision]
+
+    RefundDecideResult:
+      type: object
+      properties:
+        bookingId: { type: string }
+        decision:
+          type: string
+          enum: [approved, denied]
+        decidedAt: { type: string, format: date-time }
+        refundId:
+          type: string
+          description: Set when decision=approved (Stripe `re_…`).
+        refundedAt:
+          type: string
+          format: date-time
+          description: Set when decision=approved.
+        reason:
+          type: string
+          description: Set when decision=denied (the admin's denial explanation).
+      required: [bookingId, decision, decidedAt]
+
+    CreateBookingPaymentIntentResponse:
+      type: object
+      description: |
+        Returned by POST /bookings/payment-intent. Mobile uses
+        `clientSecret` to confirm via Stripe PaymentSheet, then refreshes
+        the bookings list (the row is already in `pending`).
+      properties:
+        bookingId: { type: string }
+        paymentIntentId: { type: string }
+        clientSecret:
+          type: string
+          description: Stripe PaymentIntent client_secret for PaymentSheet.
+        customerId:
+          type: string
+          description: Stripe Customer id created/reused for this user.
+        stripeAccountId:
+          type: string
+          description: SP's Connect account that will receive the destination transfer.
+      required: [bookingId, paymentIntentId, clientSecret, customerId, stripeAccountId]
+
+    BookingRefundResult:
+      type: object
+      description: Returned by POST /bookings/{id}/refund.
+      properties:
+        bookingId: { type: string }
+        refundId: { type: string }
+        refundedAt:
+          type: string
+          format: date-time
+          nullable: true
+        alreadyRefunded:
+          type: boolean
+          description: True when the booking was already refunded prior to this call.
+      required: [bookingId, refundId, alreadyRefunded]
+
+    BlockedSlot:
+      type: object
+      properties:
+        id: { type: string }
+        businessId: { type: string }
+        date: { type: string, description: "YYYY-MM-DD" }
+        allDay: { type: boolean }
+        startTime:
+          type: string
+          nullable: true
+        endTime:
+          type: string
+          nullable: true
+        label:
+          type: string
+          nullable: true
+      required: [id, businessId, date, allDay]
+
+    AvailabilitySlot:
+      type: object
+      properties:
+        time:
+          type: string
+          description: "HH:MM 24h"
+        available: { type: boolean }
+        remaining:
+          type: integer
+          description: Seats still open at this slot (0 when blocked or fully booked).
+        reason:
+          type: string
+          nullable: true
+          description: e.g. "fully booked", "blocked"
+      required: [time, available, remaining]
+
+    Availability:
+      type: object
+      properties:
+        serviceId: { type: string }
+        date: { type: string, description: "YYYY-MM-DD" }
+        slots:
+          type: array
+          items:
+            $ref: "#/components/schemas/AvailabilitySlot"
+        capacity:
+          type: integer
+          description: Concurrent bookings the business can handle (employee count, min 1)
+        vacation:
+          nullable: true
+          description: |
+            Populated when the requested date falls inside the SP's vacation
+            window. When non-null, `slots` will be empty and the client should
+            render an OOO banner using `message` (or a default if null).
+          type: object
+          properties:
+            active: { type: boolean }
+            from: { type: string, description: "YYYY-MM-DD" }
+            until: { type: string, description: "YYYY-MM-DD" }
+            message:
+              type: string
+              nullable: true
+          required: [active, from, until]
+      required: [serviceId, date, slots, capacity]
+
+    # ----- Write request payloads (T005) -----
+
+    CreateBookingRequest:
+      type: object
+      properties:
+        serviceId: { type: string }
+        optionId: { type: string }
+        scheduledDate: { type: string, description: "YYYY-MM-DD" }
+        scheduledTime:
+          type: string
+          nullable: true
+          description: "HH:MM 24h"
+      required: [serviceId, optionId, scheduledDate]
+
+    UpdateBookingStatusRequest:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [pending, confirmed, completed, cancelled]
+      required: [status]
+
+    UpdateMyBusinessRequest:
+      type: object
+      description: |
+        Partial update for the SP's own business. Only fields the client sends
+        are touched. Vacation fields must be sent as a pair (both strings to
+        enable, both null to clear).
+      properties:
+        hours:
+          oneOf:
+            - $ref: "#/components/schemas/BusinessHours"
+            - type: "null"
+        phone:
+          type: string
+          nullable: true
+        location:
+          type: string
+          nullable: true
+        description:
+          type: string
+          nullable: true
+        vacationFrom:
+          type: string
+          nullable: true
+          description: "YYYY-MM-DD, inclusive start of OOO window."
+        vacationUntil:
+          type: string
+          nullable: true
+          description: "YYYY-MM-DD, inclusive end of OOO window."
+        vacationMessage:
+          type: string
+          nullable: true
+        cancellationFullRefundHours:
+          type: integer
+          minimum: 0
+          maximum: 720
+        cancellationPartialRefundHours:
+          type: integer
+          minimum: 0
+          maximum: 720
+        cancellationPartialRefundPercent:
+          type: integer
+          minimum: 0
+          maximum: 100
+
+    CancellationPolicy:
+      type: object
+      properties:
+        fullRefundHours: { type: integer }
+        partialRefundHours: { type: integer }
+        partialRefundPercent: { type: integer }
+      required: [fullRefundHours, partialRefundHours, partialRefundPercent]
+
+    CancellationQuote:
+      type: object
+      description: |
+        Preview of the refund a customer would receive if they cancelled
+        this booking right now. Returned by GET /bookings/{id}/cancellation-quote.
+        `eligible:false` means the booking is in a terminal state — render
+        the policy as info but do not show a confirm-cancel CTA.
+      properties:
+        eligible: { type: boolean }
+        reason:
+          type: string
+          nullable: true
+          enum: [already_cancelled, already_completed, null]
+          description: Why the booking can't be cancelled, when eligible=false.
+        refundCents: { type: integer }
+        tier:
+          type: string
+          enum: [full, partial, none]
+        hoursUntilScheduled: { type: number }
+        totalCents: { type: integer }
+        paid:
+          type: boolean
+          nullable: true
+          description: True when the booking has a paymentIntent (refund flow can run).
+        policy:
+          $ref: "#/components/schemas/CancellationPolicy"
+      required: [eligible, refundCents, tier, hoursUntilScheduled, totalCents, policy]
+
+    CreateBlockedSlotRequest:
+      type: object
+      properties:
+        date: { type: string, description: "YYYY-MM-DD" }
+        allDay: { type: boolean }
+        startTime:
+          type: string
+          nullable: true
+          description: "HH:MM 24h"
+        endTime:
+          type: string
+          nullable: true
+          description: "HH:MM 24h"
+        label:
+          type: string
+          nullable: true
+      required: [date, allDay]
+
+    CreateServiceRequest:
+      type: object
+      properties:
+        categoryId: { type: string }
+        title: { type: string }
+        description:
+          type: string
+          nullable: true
+        tags:
+          type: array
+          items:
+            type: string
+          nullable: true
+        requiredSpecialty:
+          type: string
+          nullable: true
+        featured:
+          type: boolean
+          nullable: true
+        options:
+          type: array
+          nullable: true
+          description: >-
+            Optional inline options. When present they are inserted in the same
+            transaction as the service and `startingPrice` is recomputed from
+            their prices.
+          items:
+            $ref: "#/components/schemas/CreateServiceOptionRequest"
+      required: [categoryId, title]
+
+    UpdateServiceRequest:
+      type: object
+      properties:
+        categoryId:
+          type: string
+          nullable: true
+        title:
+          type: string
+          nullable: true
+        description:
+          type: string
+          nullable: true
+        tags:
+          type: array
+          items:
+            type: string
+          nullable: true
+        requiredSpecialty:
+          type: string
+          nullable: true
+        featured:
+          type: boolean
+          nullable: true
+        options:
+          type: array
+          nullable: true
+          description: >-
+            Optional full replacement of this service's options. When provided
+            (even as an empty array), all existing options are deleted and the
+            supplied list is inserted in the same transaction; `startingPrice`
+            is recomputed.
+          items:
+            $ref: "#/components/schemas/CreateServiceOptionRequest"
+
+    CreateServiceOptionRequest:
+      type: object
+      properties:
+        name: { type: string }
+        description:
+          type: string
+          nullable: true
+        price:
+          type: string
+          description: Decimal as string
+        duration: { type: string }
+        defaultStartTime:
+          type: string
+          nullable: true
+          description: HH:MM 24h. Pin a single start time for long-duration options.
+      required: [name, price, duration]
+
+    UpdateServiceOptionRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          nullable: true
+        description:
+          type: string
+          nullable: true
+        price:
+          type: string
+          nullable: true
+          description: Decimal as string
+        duration:
+          type: string
+          nullable: true
+        defaultStartTime:
+          type: string
+          nullable: true
+          description: HH:MM 24h. Pin a single start time for long-duration options. Pass null to clear.
+
+    ApplicationFees:
+      type: object
+      required: [applicationFeeCents, onboardingFeeCents, currency]
+      properties:
+        applicationFeeCents: { type: integer, minimum: 0 }
+        onboardingFeeCents: { type: integer, minimum: 0 }
+        currency: { type: string, enum: [usd] }
+
+    CreateBizAccountRequest:
+      type: object
+      properties:
+        businessName: { type: string }
+        ownerName: { type: string }
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          minLength: 8
+        phone:
+          type: string
+          nullable: true
+        businessType:
+          type: string
+          enum: [brick-and-mortar, home-based]
+        yearsInBusiness:
+          type: string
+          nullable: true
+        alaskaLicenseNumber:
+          type: string
+          nullable: true
+        businessDescription:
+          type: string
+          nullable: true
+        expectedApplicationFeeCents:
+          type: integer
+          minimum: 0
+          description: Fee shown to the applicant. If supplied and no longer current, checkout is rejected before creating any records.
+      required: [businessName, ownerName, email, password, businessType]
+
+    CreateBizAccountResponse:
+      type: object
+      description: Newly-created application (in awaiting_payment) plus the Stripe-hosted checkout URL the client must open.
+      properties:
+        bizAccount:
+          $ref: "#/components/schemas/BizAccount"
+        checkoutUrl:
+          type: string
+          description: Stripe Checkout Session URL for the configured application fee. Open this in a browser.
+      required: [bizAccount, checkoutUrl]
+
+    OnboardingCheckoutResponse:
+      type: object
+      description: Stripe-hosted checkout URL for the configured onboarding fee.
+      properties:
+        checkoutUrl:
+          type: string
+          description: Stripe Checkout Session URL for the configured onboarding fee. Open this in a browser.
+      required: [checkoutUrl]
+
+    ApproveBizAccountRequest:
+      type: object
+      properties:
+        categoryId:
+          type: string
+          nullable: true
+          description: Optional category id to seed the new business with. Defaults to "handyman" if omitted; admin can change it later.
+      required: []
+
+    ApproveBizAccountResult:
+      type: object
+      properties:
+        bizAccount:
+          $ref: "#/components/schemas/BizAccount"
+        business:
+          $ref: "#/components/schemas/Business"
+      required: [bizAccount, business]
+
+    RejectBizAccountRequest:
+      type: object
+      properties:
+        reason:
+          type: string
+          nullable: true
+          description: Optional human-readable reason persisted on the application row.
+      required: []
+
+    BizAccountStatusResponse:
+      type: object
+      description: Minimal status snapshot exposed without auth so the payment-return screen can poll until the Stripe webhook lands.
+      properties:
+        applicationPayment:
+          anyOf:
+            - $ref: "#/components/schemas/PaymentReceipt"
+            - type: "null"
+        onboardingPayment:
+          anyOf:
+            - $ref: "#/components/schemas/PaymentReceipt"
+            - type: "null"
+        id: { type: string }
+        status:
+          type: string
+          enum: [awaiting_payment, pending, accepted, approved, rejected]
+        paidAt:
+          type: string
+          format: date-time
+          nullable: true
+        meetingAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: In-person meeting time scheduled by the admin after acceptance; null when not scheduled.
+        meetingLocation:
+          type: string
+          nullable: true
+          description: Where the in-person meeting takes place (address or notes); null when no meeting is scheduled or no location set.
+        meetingDurationMinutes:
+          type: integer
+          nullable: true
+          description: Meeting length in minutes; null when no meeting is scheduled.
+      required: [id, status, paidAt, meetingAt, meetingLocation, meetingDurationMinutes]
+
+    PaymentReceipt:
+      type: object
+      description: Actual amount paid to Stripe, never inferred from current pricing. Absent for historical payments whose receipt was not recorded.
+      properties:
+        amountCents: { type: integer, minimum: 0 }
+        currency: { type: string, pattern: "^[a-z]{3}$" }
+      required: [amountCents, currency]
+
+    OnboardingCheckoutInput:
+      type: object
+      properties:
+        expectedOnboardingFeeCents:
+          type: integer
+          minimum: 0
+          description: Amount in USD cents the applicant reviewed. Optional for older clients. A changed price returns 409 before starting checkout.
+
+    UpdateBizAccountRequest:
+      type: object
+      properties:
+        # Admin-only fields:
+        status:
+          type: string
+          enum: [awaiting_payment, pending, accepted, approved, rejected]
+          nullable: true
+        meetingAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: Admin-only — schedule/reschedule the in-person meeting. Explicit null clears it.
+        meetingLocation:
+          type: string
+          nullable: true
+          description: Admin-only — where the in-person meeting takes place (address or notes). Included in the calendar invite's LOCATION.
+        meetingDurationMinutes:
+          type: integer
+          nullable: true
+          minimum: 15
+          maximum: 480
+          description: Admin-only — meeting length in minutes (default 60). Sets the calendar invite's end time.
+        # SP-owner editable fields:
+        phone:
+          type: string
+          nullable: true
+        businessDescription:
+          type: string
+          nullable: true
+        alaskaLicenseNumber:
+          type: string
+          nullable: true
+        yearsInBusiness:
+          type: string
+          nullable: true
+        ownerName:
+          type: string
+          nullable: true
+
+    Notification:
+      type: object
+      properties:
+        id: { type: string }
+        userId: { type: string }
+        kind:
+          type: string
+          enum: [booking_created, booking_confirmed, booking_completed, booking_cancelled, booking_payment_failed, booking_refunded, refund_requested, refund_approved, refund_denied, dispute_opened, dispute_closed, message_received]
+        title: { type: string }
+        body: { type: string }
+        bookingId:
+          type: string
+          nullable: true
+        readAt:
+          type: string
+          format: date-time
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+      required: [id, userId, kind, title, body, createdAt]
+
+    RegisterPushTokenRequest:
+      type: object
+      properties:
+        pushToken:
+          type: string
+          nullable: true
+          description: Expo push token, e.g. "ExponentPushToken[xxxxx]". Pass null to clear.
+      required: [pushToken]
+
+    PlanTier:
+      type: string
+      enum: [starter_gigger, pro_business]
+      description: Subscription plan tier. Starter Gigger=$29/mo (5 services, 9% commission, 3-month booking window); Pro Business=$79/mo (20 services, 6.5% commission, 6-month booking window).
+
+    MySubscriptionResponse:
+      type: object
+      description: Current SP subscription snapshot used by the mobile dashboard to gate listing creation and surface usage.
+      properties:
+        plan:
+          $ref: "#/components/schemas/PlanTier"
+        active:
+          type: boolean
+          description: True iff the subscription entitles the SP to its plan's perks (Stripe status `active` or `trialing`).
+        servicesUsed:
+          type: integer
+          minimum: 0
+          description: How many services the SP currently has listed.
+        servicesLimit:
+          type: integer
+          nullable: true
+          minimum: 0
+          description: Hard cap on listed services for this plan, or null for unlimited (Premium).
+        currentPeriodEnd:
+          type: string
+          format: date-time
+          nullable: true
+          description: ISO timestamp when the current Stripe billing period ends, if any.
+        stripeManageUrl:
+          type: string
+          nullable: true
+          description: One-shot Stripe billing-portal URL for managing/cancelling the subscription, if a customer exists.
+        priceCents:
+          type: integer
+          description: Monthly price in cents for the current plan (display-only).
+      required: [plan, active, servicesUsed, priceCents]
+
+    CreateSubscriptionCheckoutRequest:
+      type: object
+      properties:
+        plan:
+          $ref: "#/components/schemas/PlanTier"
+        successUrl:
+          type: string
+          nullable: true
+          description: Optional override for the post-checkout redirect URL.
+        cancelUrl:
+          type: string
+          nullable: true
+          description: Optional override for the cancel redirect URL.
+      required: [plan]
+
+    SubscriptionCheckoutResponse:
+      type: object
+      properties:
+        url:
+          type: string
+          description: Stripe-hosted checkout URL.
+        sessionId:
+          type: string
+          description: Stripe Checkout session id.
+      required: [url, sessionId]
+
+    BizAccount:
+      type: object
+      description: Public view of a biz_account (passwordHash never returned)
+      properties:
+        id: { type: string }
+        businessName: { type: string }
+        ownerName: { type: string }
+        phone: { type: string }
+        email: { type: string }
+        businessType:
+          type: string
+          enum: [brick-and-mortar, home-based]
+        yearsInBusiness: { type: string }
+        alaskaLicenseNumber: { type: string }
+        businessDescription: { type: string }
+        status:
+          type: string
+          enum: [awaiting_payment, pending, accepted, approved, rejected]
+        appliedAt:
+          type: string
+          format: date-time
+        expiresAt:
+          type: string
+          format: date-time
+        stripeSessionId:
+          type: string
+          nullable: true
+        ownerId:
+          type: string
+          nullable: true
+        acceptedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: When an admin accepted the application after the interview (status → accepted).
+        onboardingSessionId:
+          type: string
+          nullable: true
+          description: Stripe Checkout Session id for the $60 onboarding fee.
+        onboardingPaidAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the $60 onboarding fee was paid (status → approved).
+        meetingAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: In-person meeting time scheduled by the admin after acceptance.
+        meetingLocation:
+          type: string
+          description: Where the in-person meeting takes place (address or notes). Empty string when not set.
+        meetingDurationMinutes:
+          type: integer
+          description: Meeting length in minutes (default 60).
+      required:
+        - id
+        - businessName
+        - ownerName
+        - phone
+        - email
+        - businessType
+        - yearsInBusiness
+        - alaskaLicenseNumber
+        - businessDescription
+        - status
+        - appliedAt
+        - expiresAt
+
+    StripeConnectAccountResponse:
+      type: object
+      description: |
+        Snapshot of the SP's Stripe Connect Express account. `accountId` is
+        null only when the SP has never started onboarding. `status` collapses
+        Stripe's many flags into the four states the mobile UI cares about.
+      properties:
+        accountId:
+          type: string
+          nullable: true
+          description: Stripe `acct_…` id, or null if onboarding never started.
+        status:
+          type: string
+          enum: [none, pending, active, restricted]
+          description: |
+            none = no account yet; pending = account exists but onboarding
+            not finished or under review; active = charges + payouts both
+            enabled; restricted = Stripe has explicitly disabled the account.
+        chargesEnabled:
+          type: boolean
+          description: Mirror of `account.charges_enabled` from Stripe.
+        payoutsEnabled:
+          type: boolean
+          description: Mirror of `account.payouts_enabled` from Stripe.
+        requirementsDue:
+          type: array
+          items: { type: string }
+          description: Stripe `requirements.currently_due` field; empty when none.
+      required: [accountId, status, chargesEnabled, payoutsEnabled, requirementsDue]
+
+    EarningsBucket:
+      type: object
+      description: Aggregated money for one window. All amounts are integer USD cents.
+      properties:
+        gross:    { type: integer, description: SUM(price) cents — what the SP earned before the platform cut. }
+        fees:     { type: integer, description: SUM(platform_fee) cents — what the platform kept. }
+        refunded: { type: integer, description: SUM(price) cents for bookings that were refunded back to the customer. }
+        net:      { type: integer, description: gross - fees - refunded, in cents. }
+        count:    { type: integer, description: Number of paid bookings in this window. }
+      required: [gross, fees, refunded, net, count]
+
+    EarningsBalance:
+      type: object
+      description: Live Stripe Connect balance for the SP's connected account.
+      properties:
+        pendingCents:   { type: integer, description: Funds still in Stripe's pending bucket awaiting payout. }
+        availableCents: { type: integer, description: Funds Stripe could pay out today. }
+        currency:       { type: string, description: ISO currency code, e.g. "usd". }
+      required: [pendingCents, availableCents, currency]
+
+    EarningsRecentItem:
+      type: object
+      description: One row in the SP's recent-payments list.
+      properties:
+        bookingId:     { type: string }
+        customerName:  { type: string }
+        serviceTitle:  { type: string }
+        scheduledDate: { type: string, description: "YYYY-MM-DD" }
+        grossCents:    { type: integer }
+        feeCents:      { type: integer }
+        netCents:      { type: integer, description: 0 if the booking was refunded. }
+        refunded:      { type: boolean }
+        paidAt:        { type: string, format: date-time, description: When the booking row (and its PaymentIntent) was created. }
+      required: [bookingId, customerName, serviceTitle, scheduledDate, grossCents, feeCents, netCents, refunded, paidAt]
+
+    EarningsResponse:
+      type: object
+      description: Full SP earnings dashboard payload.
+      properties:
+        currency:       { type: string, description: Always "usd" for v1. }
+        lifetime:       { $ref: "#/components/schemas/EarningsBucket" }
+        last30Days:     { $ref: "#/components/schemas/EarningsBucket" }
+        balance:
+          allOf:
+            - $ref: "#/components/schemas/EarningsBalance"
+          nullable: true
+          description: Null when SP hasn't finished Connect onboarding or Stripe is briefly unreachable.
+        recentPayments:
+          type: array
+          items:
+            $ref: "#/components/schemas/EarningsRecentItem"
+      required: [currency, lifetime, last30Days, balance, recentPayments]
+
+    Message:
+      type: object
+      description: One chat message on a per-booking thread.
+      properties:
+        id:           { type: string }
+        bookingId:    { type: string }
+        senderUserId: { type: string }
+        senderRole:
+          type: string
+          enum: [customer, business]
+        body:         { type: string }
+        readAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: Set when the OTHER party first opens the thread after this message arrived.
+        createdAt:    { type: string, format: date-time }
+      required: [id, bookingId, senderUserId, senderRole, body, createdAt]
+
+    SendMessageRequest:
+      type: object
+      properties:
+        body:
+          type: string
+          minLength: 1
+          maxLength: 2000
+          description: The message text. Trimmed server-side; max 2000 chars after trim.
+      required: [body]
+
+    Conversation:
+      type: object
+      description: One row in the caller's inbox — the latest activity per booking thread.
+      properties:
+        bookingId:        { type: string }
+        counterpartyName: { type: string, description: "If caller is the customer, this is the business's name; if caller is the SP, the customer's name." }
+        scheduledDate:    { type: string, description: "YYYY-MM-DD" }
+        lastMessageBody:  { type: string }
+        lastMessageAt:    { type: string, format: date-time }
+        lastMessageFromMe: { type: boolean, description: True when the caller authored the most-recent message. }
+        unreadCount:      { type: integer, description: Number of unread messages from the other side. }
+      required: [bookingId, counterpartyName, scheduledDate, lastMessageBody, lastMessageAt, lastMessageFromMe, unreadCount]
+
+    StripeConnectOnboardingLinkResponse:
+      type: object
+      description: One-shot Stripe Account Link URL for the hosted Express onboarding flow.
+      properties:
+        url:
+          type: string
+          format: uri
+          description: Hosted Stripe URL the mobile client opens via WebBrowser.
+        expiresAt:
+          type: string
+          format: date-time
+          description: ISO timestamp at which the URL stops working (~5 min from creation).
+      required: [url, expiresAt]
