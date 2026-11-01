@@ -9,12 +9,17 @@ module.exports = defineConfig({
   timeout: 15_000,
   outputDir: '../../generated-artifacts/landing-page-browser',
   reporter: 'list',
-  use: {
-    browserName: 'chromium',
-    serviceWorkers: 'block',
-    launchOptions: {
-      executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined,
+  projects: ['chromium', 'firefox', 'webkit'].map(browserName => ({
+    name: browserName,
+    use: {
+      browserName,
+      launchOptions: {
+        executablePath: process.env[`PLAYWRIGHT_${browserName.toUpperCase()}_EXECUTABLE_PATH`] || undefined,
+      },
     },
+  })),
+  use: {
+    serviceWorkers: 'block',
     screenshot: 'only-on-failure',
     trace: 'retain-on-failure',
   },

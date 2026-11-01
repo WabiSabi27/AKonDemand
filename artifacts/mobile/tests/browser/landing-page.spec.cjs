@@ -61,6 +61,31 @@ const links = [
   ['.open-button', deepLink],
 ];
 
+test.beforeAll(async ({ browserName, playwright, launchOptions }) => {
+  // Keep Chromium, explicit overrides, and strict CI runs mandatory.
+  if (browserName === 'chromium' || launchOptions.executablePath ||
+      process.env.LANDING_PAGE_REQUIRE_ALL_BROWSERS === '1') return;
+  const browserType = playwright[browserName];
+  test.skip(!fs.existsSync(browserType.executablePath()),
+    `${browserName} runtime not installed; run pnpm --filter @workspace/mobile exec playwright install ${browserName}`,
+  );
+
+  // Probe without a page or network access. Only Playwright's specific missing
+  // host-dependency diagnostic means unsupported here. Crashes, timeouts and
+  // all test failures must remain failures, not become "unavailable" skips.
+  let probe;
+  try {
+    probe = await browserType.launch(launchOptions);
+  } catch (error) {
+    if (!error.message.includes('Host system is missing dependencies to run browsers.')) throw error;
+    test.skip(true,
+      `${browserName} host libraries unavailable; on supported Linux run playwright install --with-deps ${browserName}`,
+    );
+  } finally {
+    if (probe) await probe.close();
+  }
+});
+
 async function expectReachable(page, selector, { interactive = false } = {}) {
   const element = page.locator(selector);
   await expect(element).toBeVisible();
@@ -91,7 +116,11 @@ async function expectReachable(page, selector, { interactive = false } = {}) {
 for (const layout of layouts) {
   for (const colorScheme of ['light', 'dark']) {
     for (const qr of ['available', 'unavailable']) {
-      test(`${layout.name}, ${colorScheme}, QR ${qr}`, async ({ page, context }, testInfo) => {
+      test(`${layout.name}, ${colorScheme}, QR ${qr}`, async ({ page, context, browserName }, testInfo) => {
+        // UA overrides below exercise OS detection only. The project must still
+        // launch its own real engine; do not replace Firefox/WebKit with Chromium
+        // device descriptors (Firefox also does not support isMobile emulation).
+        expect(context.browser().browserType().name()).toBe(browserName);
         await page.setViewportSize({ width: layout.width, height: layout.height });
         await page.emulateMedia({ colorScheme });
         const unexpected = [];
@@ -120,7 +149,8 @@ for (const layout of layouts) {
           window.__openingAttempts = [];
           window.__linkActivations = [];
           document.addEventListener('click', event => {
-            const link = event.target.closest('a');
+            // SVG clicks can have a non-HTMLElement target in different engines.
+            const link = event.target instanceof Element && event.target.closest('a');
             if (!link) return;
             event.preventDefault();
             window.__linkActivations.push(link.href);
@@ -135,6 +165,8 @@ for (const layout of layouts) {
         }
         await expect(page.locator('#loading')).toBeHidden();
         await expect(page.locator('#content')).toBeVisible();
+        await expect(page.getByRole('heading', { name: 'Download Expo Go' })).toBeVisible();
+        await expect(page.getByRole('heading', { name: 'Scan QR Code' })).toBeVisible();
         expect(await page.evaluate(() => window.__openingAttempts))
           .toEqual(layout.mobile ? [deepLink] : []);
 
@@ -186,9 +218,11 @@ for (const layout of layouts) {
         // Verify real pointer and keyboard activation without leaving the page.
         for (const [selector] of links) await page.locator(selector).click();
         const tabOrder = await page.locator('a').evaluateAll(elements => elements.map(el => el.href));
-        await page.locator('body').click({ position: { x: 1, y: 1 } });
-        for (const href of tabOrder) {
-          await page.keyboard.press('Tab');
+        // Start at a known focus position: clicking the body does not reset the
+        // sequential keyboard focus starting point consistently across engines.
+        await page.locator('a').first().focus();
+        for (const [index, href] of tabOrder.entries()) {
+          if (index > 0) await page.keyboard.press('Tab');
           await expect(page.locator(':focus')).toHaveAttribute('href', href);
           await page.keyboard.press('Enter');
         }
