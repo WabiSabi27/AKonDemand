@@ -30,6 +30,14 @@ whose mocked status is temporarily unavailable. After mock recovery, clicking
 **Check application status** reuses the URL id and reflects persisted pending or
 approved status without opening Checkout or sending mutations.
 
+Three negative guard cases use only blank loopback recorder pages and synthetic
+identifiers. An unknown status id, a checkout POST, and a script from a second
+loopback origin must each produce a browser request-aborted event and an entry
+in the guard's unexpected-request report, with no request reaching either
+recorder. A successful local document request verifies the recorder is reachable.
+These cases share the redirect suite's guard and install it before navigation;
+they never load the application or contact a payment/status service.
+
 This complements `scripts/check-published-payment-return.cjs`, which checks public
 HTTP routing but does not execute JavaScript. It does not replace that published
 smoke check or test native downloads or rejected-applicant checkout.
@@ -44,7 +52,7 @@ pushes to `main` or `master`, GitHub release publication, and manual dispatch.
 It installs the frozen mobile workspace dependencies with pnpm 10.26.1 and
 Node 24, installs Chromium with its Linux dependencies, then invokes the package
 command above. That command always rebuilds the current Expo web export before
-running all fourteen cases; it does not reuse an old bundle.
+running all seventeen cases; it does not reuse an old bundle.
 
 The job needs no secrets or deployment configuration. It bakes the reserved
 `payment-return.invalid` host into the export, starts only the local static server,

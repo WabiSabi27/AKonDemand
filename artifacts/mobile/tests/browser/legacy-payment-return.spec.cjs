@@ -1,5 +1,7 @@
 const { once } = require('node:events');
+const { createServer } = require('node:http');
 const { test, expect } = require('@playwright/test');
+const { mockPublicApi } = require('./payment-request-guard.cjs');
 
 let server;
 let origin;
@@ -20,39 +22,6 @@ test.afterAll(async () => {
     server.closeAllConnections();
   });
 });
-
-async function mockPublicApi(context, { id, respondToStatus, statusRequests, unexpected }) {
-  // Fail closed, including the API host baked into the export. Even a real
-  // status GET can reconcile payment state, so only static local assets pass.
-  await context.route('**/*', async route => {
-    const request = route.request();
-    const url = new URL(request.url());
-    if (request.method() !== 'GET') {
-      unexpected.push(`${request.method()} ${url.pathname}`);
-      return route.abort();
-    }
-    if (url.pathname.startsWith('/api/')) {
-      if (id && url.pathname === `/api/biz-accounts/${id}/status`) {
-        statusRequests.push(url.pathname);
-        return respondToStatus(route);
-      }
-      if (url.pathname === '/api/application-fees') {
-        return route.fulfill({ json: { applicationFeeCents: 100, onboardingFeeCents: 200, currency: 'usd' } });
-      }
-      // Root AppProvider loads these public lists even on this public page.
-      if (['/api/categories', '/api/businesses', '/api/services'].includes(url.pathname)) {
-        return route.fulfill({ json: [] });
-      }
-    } else if (url.origin === origin && (
-      request.isNavigationRequest()
-      || ['script', 'stylesheet', 'font', 'image'].includes(request.resourceType())
-    )) {
-      return route.continue();
-    }
-    unexpected.push(`${request.method()} ${url.pathname}`);
-    return route.abort();
-  });
-}
 
 const cases = [
   { name: 'paid application', flag: 'success=true', status: 'pending', title: 'Application received!' },
@@ -84,7 +53,7 @@ for (const suffix of ['', '/']) {
       // the API domain baked into the export. Never let a status GET reconcile
       // a real application, and never permit Checkout or other mutations.
       await mockPublicApi(context, {
-        id, statusRequests, unexpected,
+        origin, id, statusRequests, unexpected,
         respondToStatus: route => route.fulfill({ json: status }),
       });
 
@@ -130,7 +99,7 @@ for (const suffix of ['', '/']) {
     const unexpected = [];
     const pageErrors = [];
     page.on('pageerror', error => pageErrors.push(error.message));
-    await mockPublicApi(context, { statusRequests, unexpected });
+    await mockPublicApi(context, { origin, statusRequests, unexpected });
 
     // Playwright supplies a fresh context: no fallback id or signed-in account.
     const query = '?success=true';
@@ -166,7 +135,7 @@ for (const suffix of ['', '/']) {
         window.open = () => { window.checkoutOpenAttempts += 1; return null; };
       });
       await mockPublicApi(context, {
-        id, statusRequests, unexpected,
+        origin, id, statusRequests, unexpected,
         respondToStatus: route => recovered
           ? route.fulfill({ json: status })
           : route.fulfill({ status: 503, json: { message: 'Temporarily unavailable' } }),
@@ -207,3 +176,94 @@ for (const suffix of ['', '/']) {
     });
   }
 }
+
+async function startRequestRecorder() {
+  const requests = [];
+  const recorder = createServer((request, response) => {
+    requests.push(`${request.method} ${request.url}`);
+    // A blank document only: never import application code or proxy an API.
+    response.writeHead(200, { 'content-type': 'text/html' });
+    response.end('<!doctype html><title>Request guard fixture</title>');
+  });
+  recorder.listen(0, '127.0.0.1');
+  await once(recorder, 'listening');
+  return {
+    origin: `http://127.0.0.1:${recorder.address().port}`,
+    requests,
+    close: () => new Promise(resolve => {
+      recorder.close(resolve);
+      recorder.closeAllConnections();
+    }),
+  };
+}
+
+test.describe('fail-closed payment request interception', () => {
+  let local;
+  let external;
+
+  test.beforeAll(async () => {
+    local = await startRequestRecorder();
+    // A different origin, but still exclusively a loopback recorder.
+    external = await startRequestRecorder();
+  });
+
+  test.afterAll(async () => {
+    await Promise.all([local?.close(), external?.close()]);
+  });
+
+  for (const probe of [
+    { name: 'unexpected status identifier', method: 'GET', path: '/api/biz-accounts/ba_browser_guard_unexpected/status' },
+    { name: 'checkout POST', method: 'POST', path: '/api/biz-accounts/ba_browser_guard_allowed/checkout' },
+    { name: 'external script request', method: 'GET', path: '/guard-external.js', external: true },
+  ]) {
+    test(`aborts and reports an ${probe.name} without reaching the recorder`, async ({ page, context }) => {
+      local.requests.length = 0;
+      external.requests.length = 0;
+      const unexpected = [];
+      const statusRequests = [];
+      let statusResponses = 0;
+      // The exact same guard as the redirect tests, installed before navigation.
+      await mockPublicApi(context, {
+        origin: local.origin,
+        id: 'ba_browser_guard_allowed',
+        unexpected,
+        statusRequests,
+        respondToStatus: route => {
+          statusResponses += 1;
+          return route.fulfill({ json: { id: 'ba_browser_guard_allowed', status: 'pending' } });
+        },
+      });
+      await page.goto(`${local.origin}/guard-fixture`);
+      // Positive control: the recorder really is reachable through the guard.
+      expect(local.requests).toEqual(['GET /guard-fixture']);
+      const url = `${probe.external ? external.origin : local.origin}${probe.path}`;
+      const failed = page.waitForEvent('requestfailed', request => request.url() === url);
+      const outcome = await page.evaluate(async ({ url, method, script }) => {
+        if (script) {
+          return new Promise(resolve => {
+            const element = document.createElement('script');
+            element.onload = () => resolve('loaded');
+            element.onerror = () => resolve('blocked');
+            element.src = url;
+            document.head.appendChild(element);
+          });
+        }
+        try {
+          await fetch(url, { method });
+          return 'loaded';
+        } catch {
+          return 'blocked';
+        }
+      }, { url, method: probe.method, script: Boolean(probe.external) });
+      const request = await failed;
+      expect(outcome).toBe('blocked');
+      expect(request.method()).toBe(probe.method);
+      expect(request.failure().errorText).toBe('net::ERR_FAILED');
+      expect(unexpected).toEqual([`${probe.method} ${probe.path}`]);
+      expect(statusRequests).toEqual([]);
+      expect(statusResponses).toBe(0);
+      expect(local.requests).toEqual(['GET /guard-fixture']);
+      expect(external.requests).toEqual([]);
+    });
+  }
+});
