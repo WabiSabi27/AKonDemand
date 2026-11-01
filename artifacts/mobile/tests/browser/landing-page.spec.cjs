@@ -55,11 +55,43 @@ const layouts = [
   { name: 'desktop breakpoint', width: 768, height: 900, mobile: false },
   { name: 'wide desktop', width: 1440, height: 900, mobile: false },
 ];
+// Text-only enlargement keeps the CSS viewport unchanged. Cover both store
+// preferences at the narrowest width, plus the two-column breakpoint.
+const enlargedTextLayouts = [
+  { ...layouts[0], name: 'narrow iPhone, 200% text', textScale: 2 },
+  { ...layouts[1], name: 'narrow Android, 200% text', width: 320, textScale: 2 },
+  { ...layouts[2], name: 'desktop breakpoint, 200% text', textScale: 2 },
+];
 const links = [
   ['#app-store-btn', 'https://apps.apple.com/app/id982107779'],
   ['#play-store-btn', 'https://play.google.com/store/apps/details?id=host.exp.exponent'],
   ['.open-button', deepLink],
 ];
+
+test.beforeAll(async ({ browserName, playwright, launchOptions }) => {
+  // Keep Chromium, explicit overrides, and strict CI runs mandatory.
+  if (browserName === 'chromium' || launchOptions.executablePath ||
+      process.env.LANDING_PAGE_REQUIRE_ALL_BROWSERS === '1') return;
+  const browserType = playwright[browserName];
+  test.skip(!fs.existsSync(browserType.executablePath()),
+    `${browserName} runtime not installed; run pnpm --filter @workspace/mobile exec playwright install ${browserName}`,
+  );
+
+  // Probe without a page or network access. Only Playwright's specific missing
+  // host-dependency diagnostic means unsupported here. Crashes, timeouts and
+  // all test failures must remain failures, not become "unavailable" skips.
+  let probe;
+  try {
+    probe = await browserType.launch(launchOptions);
+  } catch (error) {
+    if (!error.message.includes('Host system is missing dependencies to run browsers.')) throw error;
+    test.skip(true,
+      `${browserName} host libraries unavailable; on supported Linux run playwright install --with-deps ${browserName}`,
+    );
+  } finally {
+    if (probe) await probe.close();
+  }
+});
 
 async function expectReachable(page, selector, { interactive = false } = {}) {
   const element = page.locator(selector);
@@ -68,11 +100,27 @@ async function expectReachable(page, selector, { interactive = false } = {}) {
   await expect(element).toBeInViewport({ ratio: 1 });
   const geometry = await element.evaluate(el => {
     const rect = el.getBoundingClientRect();
-    const card = el.closest('.step').getBoundingClientRect();
+    const card = (el.closest('.step') || el.closest('.wrapper')).getBoundingClientRect();
     return {
       x: rect.x, right: rect.right, width: rect.width, height: rect.height,
       cardLeft: card.left, cardRight: card.right,
       overflowing: el.scrollWidth > el.clientWidth + 1,
+      overflowingVertically: el.scrollHeight > el.clientHeight + 1,
+      // Scroll dimensions alone miss text painted outside a flex item or
+      // clipped with overflow:hidden. Check the rendered text itself too.
+      textContained: (() => {
+        const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+        while (walker.nextNode()) {
+          if (!walker.currentNode.textContent.trim()) continue;
+          const range = document.createRange();
+          range.selectNodeContents(walker.currentNode);
+          for (const text of range.getClientRects()) {
+            if (text.left < rect.left - 1 || text.right > rect.right + 1 ||
+                text.top < rect.top - 1 || text.bottom > rect.bottom + 1) return false;
+          }
+        }
+        return true;
+      })(),
     };
   });
   expect(geometry.x).toBeGreaterThanOrEqual(0);
@@ -80,6 +128,8 @@ async function expectReachable(page, selector, { interactive = false } = {}) {
   expect(geometry.x).toBeGreaterThanOrEqual(geometry.cardLeft);
   expect(geometry.right).toBeLessThanOrEqual(geometry.cardRight);
   expect(geometry.overflowing).toBe(false);
+  expect(geometry.overflowingVertically).toBe(false);
+  expect(geometry.textContained).toBe(true);
   if (interactive) {
     expect(geometry.width).toBeGreaterThanOrEqual(24);
     expect(geometry.height).toBeGreaterThanOrEqual(24);
@@ -88,10 +138,14 @@ async function expectReachable(page, selector, { interactive = false } = {}) {
   }
 }
 
-for (const layout of layouts) {
+for (const layout of [...layouts, ...enlargedTextLayouts]) {
   for (const colorScheme of ['light', 'dark']) {
     for (const qr of ['available', 'unavailable']) {
-      test(`${layout.name}, ${colorScheme}, QR ${qr}`, async ({ page, context }, testInfo) => {
+      test(`${layout.name}, ${colorScheme}, QR ${qr}`, async ({ page, context, browserName }, testInfo) => {
+        // UA overrides below exercise OS detection only. The project must still
+        // launch its own real engine; do not replace Firefox/WebKit with Chromium
+        // device descriptors (Firefox also does not support isMobile emulation).
+        expect(context.browser().browserType().name()).toBe(browserName);
         await page.setViewportSize({ width: layout.width, height: layout.height });
         await page.emulateMedia({ colorScheme });
         const unexpected = [];
@@ -120,7 +174,8 @@ for (const layout of layouts) {
           window.__openingAttempts = [];
           window.__linkActivations = [];
           document.addEventListener('click', event => {
-            const link = event.target.closest('a');
+            // SVG clicks can have a non-HTMLElement target in different engines.
+            const link = event.target instanceof Element && event.target.closest('a');
             if (!link) return;
             event.preventDefault();
             window.__linkActivations.push(link.href);
@@ -135,6 +190,29 @@ for (const layout of layouts) {
         }
         await expect(page.locator('#loading')).toBeHidden();
         await expect(page.locator('#content')).toBeVisible();
+        if (layout.textScale) {
+          // Do not use CSS zoom, a transform, or only html font-size (the
+          // template uses px). Snapshot every computed size before writing,
+          // so inherited text is enlarged exactly once and layout is untouched.
+          const sizes = await page.locator('body').evaluate((body, scale) => {
+            const elements = [body, ...body.querySelectorAll('*')];
+            const sizes = elements.map(el => parseFloat(getComputedStyle(el).fontSize));
+            elements.forEach((el, index) => {
+              el.style.fontSize = `${sizes[index] * scale}px`;
+            });
+            return elements.filter(el => el.matches('#qr-code, a'))
+              .map(el => sizes[elements.indexOf(el)]);
+          }, layout.textScale);
+          // Store buttons transition "all"; wait for computed text sizes to
+          // settle rather than measuring an intermediate animation frame.
+          expect(sizes).toHaveLength(4);
+          await expect.poll(() => page.locator('#qr-code, a').evaluateAll(elements =>
+            elements.map(el => parseFloat(getComputedStyle(el).fontSize)),
+          )).toEqual(sizes.map(size => size * layout.textScale));
+        }
+        await expectReachable(page, 'h1');
+        await expect(page.getByRole('heading', { name: 'Download Expo Go' })).toBeVisible();
+        await expect(page.getByRole('heading', { name: 'Scan QR Code' })).toBeVisible();
         expect(await page.evaluate(() => window.__openingAttempts))
           .toEqual(layout.mobile ? [deepLink] : []);
 
@@ -176,6 +254,11 @@ for (const layout of layouts) {
           await expect(page.locator('#qr-code')).toHaveText(
             'QR code unavailable. Use Open in Expo Go on your phone.',
           );
+          const separated = await page.locator('#qr-code').evaluate(el =>
+            el.getBoundingClientRect().bottom <=
+              document.querySelector('.open-button').getBoundingClientRect().top,
+          );
+          expect(separated).toBe(true);
         }
         expect(await page.evaluate(() => ({
           document: document.documentElement.scrollWidth > innerWidth,
@@ -186,9 +269,11 @@ for (const layout of layouts) {
         // Verify real pointer and keyboard activation without leaving the page.
         for (const [selector] of links) await page.locator(selector).click();
         const tabOrder = await page.locator('a').evaluateAll(elements => elements.map(el => el.href));
-        await page.locator('body').click({ position: { x: 1, y: 1 } });
-        for (const href of tabOrder) {
-          await page.keyboard.press('Tab');
+        // Start at a known focus position: clicking the body does not reset the
+        // sequential keyboard focus starting point consistently across engines.
+        await page.locator('a').first().focus();
+        for (const [index, href] of tabOrder.entries()) {
+          if (index > 0) await page.keyboard.press('Tab');
           await expect(page.locator(':focus')).toHaveAttribute('href', href);
           await page.keyboard.press('Enter');
         }

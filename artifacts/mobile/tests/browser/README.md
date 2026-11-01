@@ -69,3 +69,91 @@ merge only checked commits and wait for the main-branch check before publishing.
 The separate opt-in `payment-return-monitor.yml` remains unchanged: it checks
 published HTTP routing, not execution of the Expo app, and is not a substitute
 for this isolated browser regression check.
+
+## Download-instructions browser coverage
+
+```sh
+pnpm --filter @workspace/mobile exec playwright install chromium firefox webkit
+pnpm --filter @workspace/mobile run test:browser:landing-page
+```
+
+On supported Linux images, use `playwright install --with-deps chromium firefox
+webkit` to install the runtime libraries too. The landing-page config defines
+separate Chromium, Firefox, and WebKit projects. WebKit tests the engine used by
+Safari, not Safari itself or a physical iPhone. Phone user-agent overrides test
+platform detection; they do not substitute for the selected browser engine.
+
+All three engines run the same narrow-iPhone, Android-width, and desktop matrix
+in light/dark mode with QR rendering available/unavailable. Each case checks
+instructions restored after the intercepted mobile opening attempt, containment,
+store preference, QR fallback, and pointer/keyboard link activation. QR scripts
+are local stubs; link activation and Expo navigation are intercepted. Unexpected
+network requests are blocked and fail the test. No server, real store, CDN, or
+external protocol handler is needed.
+
+Focused 200% text-only cases keep the viewport at 320px for both iPhone and
+Android store preferences, and at the 768px two-column breakpoint. They double
+computed font sizes (including the template's explicit pixel sizes), not page
+zoom or box dimensions, in both color modes and QR states. Checks include text
+and vertical containment, separation of the fallback message from the open
+button, scrolling to each link, and pointer/keyboard activation under the same
+fail-closed stubs.
+
+Chromium is required. An absent bundled Firefox/WebKit executable or Playwright's
+specific missing-host-dependencies diagnostic produces explicit skips, not
+successful browser coverage. Other launch errors and all test failures fail
+rather than silently skipping. Set `LANDING_PAGE_REQUIRE_ALL_BROWSERS=1`
+to require every engine (recommended for browser-equipped CI). Use
+`--project=firefox` or `--project=webkit` to run one engine. Explicit executable
+overrides are supported via `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH`,
+`PLAYWRIGHT_FIREFOX_EXECUTABLE_PATH`, and `PLAYWRIGHT_WEBKIT_EXECUTABLE_PATH`;
+overrides must be compatible with the installed Playwright version and never
+skip when invalid. Stock Firefox is not a substitute for Playwright's patched
+Firefox runtime.
+
+The availability/skip policy also has browser-free regression coverage:
+
+```sh
+pnpm --filter @workspace/mobile exec node --test server/landing-page-browser-availability.test.cjs
+```
+
+These tests execute the actual spec's registered hook with isolated browser
+doubles, including failure propagation and probe cleanup. They also run with
+`test:server` (and `test`); they do not establish real cross-engine coverage.
+
+Screenshots and failure traces go under the ignored
+`generated-artifacts/landing-page-browser/` directory, separated by project.
+
+### Supported CI run
+
+`.github/workflows/landing-page-browser.yml` runs on pull requests, pushes to
+`main`/`master`, and manual dispatch. It uses Ubuntu 24.04 with a separate job for
+each engine and installs that engine with `playwright install --with-deps`.
+The Chromium job also runs the browser-free availability-policy tests once,
+before installing its browser. This does not replace the three real-engine runs.
+Every job sets `LANDING_PAGE_REQUIRE_ALL_BROWSERS=1` and invokes the documented
+command with its project selected:
+
+```sh
+LANDING_PAGE_REQUIRE_ALL_BROWSERS=1 pnpm --filter @workspace/mobile run test:browser:landing-page --project=firefox
+```
+
+Missing engines or host libraries fail CI rather than skipping. An engine
+failure does not cancel the other jobs. Available screenshots and retained
+failure traces are uploaded as `landing-page-browser-chromium`,
+`landing-page-browser-firefox`, and `landing-page-browser-webkit` for 14 days,
+including when the suite fails. Launch failures before a page exists may have
+no screenshot or trace; inspect the job log in that case.
+
+This workflow uses the existing isolated QR fixtures, intercepted store/Expo
+navigation, and fail-closed network routing. It needs no application server,
+Expo export, live API, payment credentials, or deployment access. The separate
+payment-return workflow is unchanged.
+
+Before merging, confirm all three **Download instructions (chromium)**,
+**Download instructions (firefox)**, and **Download instructions (webkit)**
+checks passed for the exact commit under review, without skipped cases. A local
+run that skips Firefox/WebKit is not equivalent. Repository administrators can
+require these three checks in branch protection or a ruleset; adding this file
+alone does not configure that policy. A prepared workflow is not evidence of a
+successful CI run.
