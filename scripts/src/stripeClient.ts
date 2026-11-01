@@ -1,4 +1,5 @@
 import Stripe from 'stripe';
+import type { AuditReadOptions } from './auditDeadline';
 
 const STRIPE_CONNECTION_ID = 'conn_stripe_01KXQ3MHMZ2FZ9D98JBGCMDY5P';
 
@@ -10,7 +11,7 @@ interface ConnectionResponse {
   status?: string;
 }
 
-async function getCredentials() {
+async function getCredentials(signal?: AbortSignal) {
   const hostname = process.env.REPLIT_CONNECTORS_HOSTNAME;
   const xReplitToken = process.env.REPL_IDENTITY
     ? 'repl ' + process.env.REPL_IDENTITY
@@ -31,6 +32,7 @@ async function getCredentials() {
   url.searchParams.set('include_secrets', 'true');
 
   const response = await fetch(url.toString(), {
+    signal,
     headers: {
       Accept: 'application/json',
       'X-Replit-Token': xReplitToken,
@@ -61,5 +63,17 @@ export async function getUncachableStripeClient() {
     // literal type tracks the package's bundled version, which may not always
     // match this exact pin during SDK upgrades.
     apiVersion: '2025-08-27.basil' as Stripe.LatestApiVersion,
+  });
+}
+
+// Explicit opt-in for the historical CLI. Keep default SDK retry/timeout
+// behavior unchanged for seed scripts and all API/webhook clients.
+export async function getAuditStripeClient(options: AuditReadOptions) {
+  const { secretKey } = await getCredentials(options.signal);
+  options.signal.throwIfAborted();
+  return new Stripe(secretKey, {
+    apiVersion: '2025-08-27.basil' as Stripe.LatestApiVersion,
+    timeout: options.timeout,
+    maxNetworkRetries: 0,
   });
 }

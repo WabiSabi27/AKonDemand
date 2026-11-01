@@ -1,0 +1,88 @@
+name: Payment webhook readiness regression
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: payment-webhook-readiness-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  payment-webhook-readiness:
+    name: Preview payment update status
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: readiness_ci
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 127.0.0.1:5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d readiness_ci"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      CI: 'true'
+      NODE_ENV: test
+      EXPO_NO_TELEMETRY: '1'
+      DATABASE_URL: postgresql://postgres@127.0.0.1:5432/readiness_ci
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.26.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+      - name: Install locked API, mobile and generation dependencies
+        run: >-
+          pnpm --filter workspace --filter @workspace/api-server...
+          --filter @workspace/mobile... --filter @workspace/api-spec...
+          install --frozen-lockfile
+      - name: Regenerate API contract and check committed output
+        run: |
+          pnpm --filter @workspace/api-spec run codegen
+          git diff --exit-code -- lib/api-client-react/src/generated lib/api-zod/src/generated
+          test -z "$(git status --porcelain --untracked-files=all -- lib/api-client-react/src/generated lib/api-zod/src/generated)"
+      - name: Build shared type declarations
+        run: pnpm run typecheck:libs
+      - name: Check API and mobile types
+        run: |
+          pnpm --filter @workspace/api-server run typecheck
+          pnpm --filter @workspace/mobile run typecheck
+      - name: Run isolated webhook lifecycle, readiness and concurrency tests
+        env:
+          DATABASE_URL: ''
+          SESSION_SECRET: ''
+        run: pnpm --filter @workspace/api-server run test:transport
+      - name: Run admin status-card regression tests
+        run: pnpm --filter @workspace/mobile exec vitest run tests/adminOverview.test.tsx
+      - name: Generate an ephemeral test signing key
+        run: |
+          node --input-type=module <<'NODE'
+          import { randomBytes } from 'node:crypto';
+          import { appendFileSync } from 'node:fs';
+          const key = randomBytes(32).toString('hex');
+          console.log(`::add-mask::${key}`);
+          appendFileSync(process.env.GITHUB_ENV, `SESSION_SECRET=${key}\n`);
+          NODE
+      - name: Initialize only the disposable CI database
+        run: |
+          node -e "if (process.env.DATABASE_URL !== 'postgresql://postgres@127.0.0.1:5432/readiness_ci') throw new Error('Refusing schema initialization outside the disposable CI database')"
+          pnpm --filter @workspace/db run push
+      # No API startup or application seeding; the endpoint reads a safe snapshot.
+      - name: Run admin readiness authorization and response tests
+        run: pnpm --filter @workspace/api-server exec vitest run tests/adminWebhookReadiness.test.ts

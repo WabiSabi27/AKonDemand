@@ -83,7 +83,19 @@ export default function PaymentReturnScreen() {
     activePoll.current = controller;
     const isCurrent = () => routeActive.current && !controller.signal.aborted;
 
-    const id = params.id ?? (await AsyncStorage.getItem(APP_ID_KEY));
+    let id: string | null;
+    try {
+      id = params.id ?? (await AsyncStorage.getItem(APP_ID_KEY));
+    } catch {
+      // A failed read is not a missing application or a failed payment. Keep
+      // the saved identifier intact and offer a status-only retry.
+      if (!isCurrent()) return;
+      setScreen({
+        kind: "error",
+        message: "Could not read your saved application. Your payment status has not been confirmed. Please check your application status again. Do not submit another payment.",
+      });
+      return;
+    }
     if (!isCurrent()) return;
     if (!id) {
       setScreen({ kind: "error", message: "No application id found. Please start over from the sign-up flow." });

@@ -796,7 +796,9 @@ router.post("/biz-accounts/:id/onboarding-checkout", async (req, res) => {
       }
 
       const budget = onboardingCheckoutBudget(ONBOARDING_NETWORK_BUDGET_MS);
-      const stripe = await budget.read(getUncachableStripeClient);
+      const stripe = await budget.read(() =>
+        getUncachableStripeClient({ disableConnectionRetries: true }),
+      );
       if (acct.onboardingSessionId) {
         const previous = await stripe.checkout.sessions.retrieve(
           acct.onboardingSessionId, {}, budget.requestOptions(),

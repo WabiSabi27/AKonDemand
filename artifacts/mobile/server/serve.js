@@ -83,10 +83,21 @@ function serveLandingPage(req, res, landingPageTemplate, appName) {
 }
 
 function serveStaticFile(urlPath, res) {
-  const safePath = path.normalize(urlPath).replace(/^(\.\.(\/|\\|$))+/, "");
-  const filePath = path.join(STATIC_ROOT, safePath);
+  let decodedPath;
+  try {
+    decodedPath = decodeURIComponent(urlPath);
+    if (decodedPath.includes("\0")) throw new Error("NUL in asset URL");
+  } catch {
+    res.writeHead(400);
+    res.end("Invalid asset URL");
+    return;
+  }
+  // Join before normalizing, so an encoded parent segment is rejected rather
+  // than silently clamped to a different file inside the static root.
+  const filePath = path.join(STATIC_ROOT, decodedPath);
 
-  if (!filePath.startsWith(STATIC_ROOT)) {
+  const relative = path.relative(STATIC_ROOT, filePath);
+  if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
     res.writeHead(403);
     res.end("Forbidden");
     return;

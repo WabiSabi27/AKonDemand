@@ -1,5 +1,6 @@
 const fs = require("node:fs");
 const path = require("node:path");
+const { registrationPattern, stringField } = require("./native-asset-strings.cjs");
 
 function isDevelopmentUrl(url) {
   const host = url.hostname.replace(/^\[|\]$/g, "").toLowerCase();
@@ -52,12 +53,19 @@ function checkNativeBuild({ staticRoot, baseUrl, basePath = "/" }) {
     }
 
     // Match serve.js: strip BASE_PATH when present, keep unprefixed paths,
-    // ignore the query, and do not URL-decode the pathname.
+    // ignore the query, and URL-decode the pathname exactly once.
     let pathname = url.pathname;
     if (prefix && pathname.startsWith(prefix)) {
       pathname = pathname.slice(prefix.length) || "/";
     }
-    const filePath = path.join(root, path.normalize(pathname));
+    try {
+      pathname = decodeURIComponent(pathname);
+      if (pathname.includes("\0")) throw new Error("NUL in asset URL");
+    } catch {
+      errors.push(`${label}: invalid escaped asset URL (${value})`);
+      return;
+    }
+    const filePath = path.join(root, pathname);
     const relative = path.relative(root, filePath);
     if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
       errors.push(`${label}: URL escapes static-build (${value})`);
@@ -70,8 +78,56 @@ function checkNativeBuild({ staticRoot, baseUrl, basePath = "/" }) {
         return;
       }
       checkedFiles++;
+      return filePath;
     } catch (error) {
       errors.push(`${label}: cannot read ${filePath} (${value}): ${error.code}`);
+    }
+  }
+
+  function checkBundle(platform, bundlePath) {
+    let bundle;
+    try {
+      bundle = fs.readFileSync(bundlePath, "utf8");
+    } catch (error) {
+      errors.push(`${platform} bundle: cannot read ${bundlePath}: ${error.code}`);
+      return;
+    }
+    // Match Metro's plain asset objects without executing application code.
+    // Inspect the persisted URLs, not the source paths used by the copy step.
+    const pattern = registrationPattern();
+    const seen = new Set();
+    let index = 0;
+    for (const match of bundle.matchAll(pattern)) {
+      const label = `bundle assets[${index++}]`;
+      try {
+        const registration = match[0];
+        const field = (name) => stringField(registration, name);
+        const location = field("httpServerLocation");
+        const name = field("name");
+        const type = field("type");
+        const scaleList = registration.match(/\bscales\s*:\s*(\[[^\]]*\])/);
+        if (!scaleList) throw new Error("missing scales");
+        const scales = JSON.parse(scaleList[1]);
+        if (!Array.isArray(scales) || !scales.length ||
+            scales.some((scale) => !Number.isFinite(scale) || scale <= 0)) {
+          throw new Error("invalid scales");
+        }
+        if (!location.trim() || !name || !type || /[\\/?#]/.test(name + type)) {
+          throw new Error("invalid asset location, name or type");
+        }
+        const directory = new URL(location, `${origin}${prefix}/manifest`);
+        // Append to the pathname so a leftover unstable_path query is retained
+        // and rejected, rather than silently discarded when adding a filename.
+        for (const scale of scales) {
+          const url = new URL(directory);
+          url.pathname = `${url.pathname.replace(/\/+$/, "")}/${encodeURIComponent(`${name}${scale === 1 ? "" : `@${scale}x`}.${type}`)}`;
+          if (seen.has(url.href)) continue;
+          seen.add(url.href);
+          checkReference(platform, `${label} ${name}.${type} scale ${scale}`, url.href);
+        }
+      } catch (error) {
+        errors.push(`${platform} ${label}: invalid registration: ${error.message}`);
+      }
     }
   }
 
@@ -87,7 +143,8 @@ function checkNativeBuild({ staticRoot, baseUrl, basePath = "/" }) {
       errors.push(`${platform}: cannot read manifest ${manifestPath}: ${error.message}`);
       continue;
     }
-    checkReference(platform, "launchAsset.url", manifest.launchAsset?.url, true);
+    const bundlePath = checkReference(platform, "launchAsset.url", manifest.launchAsset?.url, true);
+    if (bundlePath) checkBundle(platform, bundlePath);
     if (manifest.assets !== undefined && !Array.isArray(manifest.assets)) {
       errors.push(`${platform} assets: expected an array`);
       continue;

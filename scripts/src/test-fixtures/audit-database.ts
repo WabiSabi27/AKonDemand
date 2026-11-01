@@ -11,7 +11,8 @@ const fixtureCase = process.env.AUDIT_FIXTURE_CASE;
 const client = await actualPool.connect();
 // Persistent disposable table, NOT a PostgreSQL TEMP table: READ ONLY permits
 // writes to TEMP tables, which would make a write-rejection test misleading.
-const table = fixtureCase === "db-read-failure" ? "receipt_fixture" : "biz_accounts";
+const table = ["db-read-failure", "db-read-and-cleanup-failure", "db-read-failure-cleanup-stall"]
+  .includes(fixtureCase ?? "") ? "receipt_fixture" : "biz_accounts";
 try {
   await client.query(`CREATE SCHEMA "${namespace}"`);
   await client.query(`CREATE TABLE "${namespace}"."${table}" (
@@ -31,6 +32,7 @@ try {
   ]);
   // No public fallback: a missing fixture table must never read real accounts.
   await client.query(`SET search_path TO "${namespace}"`);
+  await client.query("SELECT set_config('application_name', $1, false)", [namespace]);
   const path = await client.query("SHOW search_path");
   if (path.rows[0].search_path.replaceAll('"', "") !== namespace) {
     throw new Error("Fixture search path was not isolated");
@@ -66,7 +68,7 @@ const auditClient = new Proxy(client, {
           if (fixtureCase === "db-private-read" && /^select /i.test(query)) {
             throw new Error(privateDiagnostics.join(" "), { cause: credentialError("28P01") });
           }
-          const stall = (["db-read-stall", "db-read-and-cleanup-stall"].includes(fixtureCase ?? "") && /^select /i.test(query)) ||
+          const stall = (["db-read-stall", "db-read-and-cleanup-stall"].includes(fixtureCase ?? "") && /^select .* from "biz_accounts"$/i.test(query)) ||
             (fixtureCase === "db-begin-stall" && /^begin$/i.test(query)) ||
             (fixtureCase === "db-read-only-stall" && /SET TRANSACTION READ ONLY/i.test(query)) ||
             (fixtureCase === "db-commit-stall" && /^commit$/i.test(query));
@@ -98,15 +100,25 @@ const auditClient = new Proxy(client, {
 
 export const pool = {
   options: { connectionTimeoutMillis: 0, statement_timeout: 0 },
+  async query(query: string, params: number[]) {
+    if (query !== "SELECT pg_cancel_backend($1)" || params.length !== 1) {
+      trace("forbidden-cancel-query");
+      throw new Error("Only audit backend cancellation is allowed");
+    }
+    trace("backend-cancel-start");
+    const result = await actualPool.query(query, params);
+    trace("backend-cancel-done", { cancelled: result.rows[0].pg_cancel_backend });
+    return result;
+  },
   async connect() {
     trace("pool-connect");
     // This fixture acquired its disposable connection during setup. Mirror the
     // pg startup parameter that the CLI sets before acquiring a real connection.
     await client.query(`SET statement_timeout = '${pool.options.statement_timeout}ms'`);
-    if (fixtureCase === "db-connect-failure") {
+    if (fixtureCase === "db-connect-failure" || fixtureCase === "db-connect-and-cleanup-failure") {
       throw credentialError("ECONNREFUSED");
     }
-    if (fixtureCase === "db-private-unknown-code") {
+    if (fixtureCase === "db-private-unknown-code" || fixtureCase === "db-and-cleanup-unknown-code") {
       throw credentialError(privateDiagnostics.join("\n"));
     }
     if (fixtureCase === "db-private-non-error") {
@@ -129,6 +141,19 @@ export const pool = {
   },
   async end() {
     trace("pool-end-start");
+    if (fixtureCase === "stripe-scan-late-reply") {
+      trace("shutdown-pending");
+      const { deliverLateCheckoutPageDuringShutdown } = await import("./audit-stripe");
+      await deliverLateCheckoutPageDuringShutdown();
+      trace("shutdown-resumed");
+    }
+    if (fixtureCase === "cleanup-open-stall") {
+      trace("shutdown-stall");
+      // Keep the real fixture pool open: the interruption deadline must close
+      // this child's database sockets even when graceful shutdown never starts.
+      setInterval(() => {}, 1_000);
+      await new Promise(() => {});
+    }
     clearInterval(keepAlive);
     if (lateConnection) await lateConnection;
     clearTimeout(connectionTimer);
@@ -147,14 +172,19 @@ export const pool = {
       await actualPool.end();
       trace("pool-end-done");
     }
-    if (fixtureCase === "cleanup-stall" || fixtureCase === "db-read-and-cleanup-stall") {
+    if (["cleanup-stall", "db-read-and-cleanup-stall", "db-read-failure-cleanup-stall", "stripe-page-cleanup-stall"]
+      .includes(fixtureCase ?? "")) {
       trace("shutdown-stall");
       // Retain a handle to prove the CLI exits itself, not because Node has no
       // work left. The child process must not need the parent's safety timeout.
       setInterval(() => {}, 1_000);
       await new Promise(() => {});
     }
-    if (fixtureCase === "cleanup-failure") {
+    if (fixtureCase === "db-and-cleanup-unknown-code") {
+      throw credentialError(privateDiagnostics.join("\n"));
+    }
+    if (["cleanup-failure", "db-connect-and-cleanup-failure", "db-read-and-cleanup-failure",
+      "stripe-and-cleanup-failure"].includes(fixtureCase ?? "")) {
       throw credentialError("ECONNRESET");
     }
   },

@@ -614,7 +614,10 @@ describe("paid onboarding activation recovery", () => {
     expect(createCheckout).not.toHaveBeenCalled();
   });
 
-  it("returns an admin failure when saving resolution fails, releases its claim, and safely retries", async () => {
+  it.each([
+    { failureMode: "saving resolution fails", failErrorSave: false },
+    { failureMode: "saving resolution and its error both fail", failErrorSave: true },
+  ])("returns an admin failure when $failureMode, releases its claim, and safely retries", async ({ failErrorSave }) => {
     const id = await applicant(true);
     const event = paymentEvent(id);
     const deadLetter = await failedDelivery(event, "missing_owner");
@@ -625,24 +628,33 @@ describe("paid onboarding activation recovery", () => {
     expect(meetingEmail.sendMeetingEmail).not.toHaveBeenCalled();
     await db.update(bizAccountsTable).set({ ownerId: id }).where(eq(bizAccountsTable.id, id));
 
-    // Receipt capture and activation remain real. Fail only the first alert
-    // update (the resolved-status write), leaving the catch-path error save
-    // available. The attempt increment uses db.execute, not db.update.
+    // Receipt capture, activation, claim acquisition, and the committed attempt
+    // increment remain real. Fail the resolved-status write, optionally followed
+    // by the catch-path lastError write so the error escapes the claim callback.
     const update = db.update.bind(db);
     const failure = new Error("synthetic admin resolution save failure");
+    const errorSaveFailure = new Error("synthetic admin lastError save failure");
     let failResolution = true;
     const resolveAlert = vi.fn(() => { throw failure; });
+    const saveError = vi.fn(() => { throw errorSaveFailure; });
     const alertStorage = vi.spyOn(db, "update").mockImplementation((table) => {
-      if (table === stripeWebhookDeadLetterTable && failResolution) {
-        failResolution = false;
-        resolveAlert();
+      if (table === stripeWebhookDeadLetterTable) {
+        if (failResolution) {
+          failResolution = false;
+          resolveAlert();
+        }
+        if (failErrorSave) saveError();
       }
       return update(table);
     });
     const failedRetry = await retry(deadLetter.id);
     expect(failedRetry.status).toBe(500);
-    expect(failedRetry.body).toEqual({ ok: false, error: failure.message });
+    expect(failedRetry.body).toEqual(failErrorSave
+      ? { error: "Internal server error" }
+      : { ok: false, error: failure.message });
     expect(resolveAlert).toHaveBeenCalledTimes(1);
+    expect(saveError).toHaveBeenCalledTimes(failErrorSave ? 1 : 0);
+    expect(alertStorage.mock.calls.filter(([table]) => table === stripeWebhookDeadLetterTable)).toHaveLength(2);
     // Restore only this DB boundary; loaded Stripe and email exports stay stubbed.
     alertStorage.mockRestore();
 
@@ -658,7 +670,8 @@ describe("paid onboarding activation recovery", () => {
     expect(pending[0]).toMatchObject({
       id: deadLetter.id, createdAt: deadLetter.createdAt, payload: event,
       status: "pending", attempts: 2, resolvedAt: null,
-      lastError: expect.stringContaining(failure.message),
+      // If recording the failure also failed, the earlier diagnostic survives.
+      lastError: failErrorSave ? deadLetter.lastError : expect.stringContaining(failure.message),
     });
     expect(pending[0].lastAttemptAt.getTime()).toBeGreaterThanOrEqual(deadLetter.lastAttemptAt.getTime());
 
@@ -685,6 +698,80 @@ describe("paid onboarding activation recovery", () => {
     // A further admin click must reject the terminal row without side effects.
     expect((await retry(deadLetter.id)).status).toBe(409);
     expect(await eventRows(event)).toEqual([resolved]);
+    expect(await account(id)).toEqual(approved);
+    expect(await db.select().from(businessesTable).where(eq(businessesTable.ownerId, id))).toEqual(businesses);
+    expect(meetingEmail.sendMeetingEmail).toHaveBeenCalledTimes(1);
+    expect(createCheckout).not.toHaveBeenCalled();
+  });
+
+  it("keeps a committed resolution terminal when its acknowledgement is lost during admin recovery", async () => {
+    const id = await applicant(true);
+    const event = paymentEvent(id);
+    const deadLetter = await failedDelivery(event, "missing_owner");
+    const originalReceipt = receipt(await account(id));
+    expect(originalReceipt).toEqual({
+      paidAt: expect.any(Date), sessionId: `cs_${id}`, amountCents: 6400, currency: "cad",
+    });
+    expect(meetingEmail.sendMeetingEmail).not.toHaveBeenCalled();
+    await db.update(bizAccountsTable).set({ ownerId: id }).where(eq(bizAccountsTable.id, id));
+
+    // Run the real resolution UPDATE to completion, then lose only its
+    // acknowledgement. Leave the catch-path diagnostic write available.
+    const update = db.update.bind(db);
+    const failure = new Error("synthetic lost admin resolution acknowledgement");
+    const loseAcknowledgement = vi.fn(() => { throw failure; });
+    let interceptResolution = true;
+    const alertStorage = vi.spyOn(db, "update").mockImplementation((table) => {
+      const builder = update(table);
+      if (table === stripeWebhookDeadLetterTable && interceptResolution) {
+        interceptResolution = false;
+        const set = builder.set.bind(builder);
+        vi.spyOn(builder, "set").mockImplementationOnce((values) => {
+          expect(values).toMatchObject({ status: "resolved", resolvedAt: expect.any(Date) });
+          const query = set(values);
+          const execute = query.execute.bind(query);
+          vi.spyOn(query, "execute").mockImplementationOnce(async () => {
+            await execute();
+            loseAcknowledgement();
+          });
+          return query;
+        });
+      }
+      return builder;
+    });
+    const failedRetry = await retry(deadLetter.id);
+    expect(failedRetry.status).toBe(500);
+    expect(failedRetry.body).toEqual({ ok: false, error: failure.message });
+    expect(loseAcknowledgement).toHaveBeenCalledTimes(1);
+    // Keep the already-loaded Stripe and email boundaries stubbed.
+    alertStorage.mockRestore();
+
+    const resolved = await getRow(deadLetter.id);
+    expect(resolved).toMatchObject({
+      id: deadLetter.id, createdAt: deadLetter.createdAt, payload: event,
+      status: "resolved", attempts: 2, resolvedAt: expect.any(Date),
+      lastError: expect.stringContaining(failure.message),
+    });
+    expect(resolved.lastAttemptAt.getTime()).toBeGreaterThanOrEqual(deadLetter.lastAttemptAt.getTime());
+    expect(await eventRows(event)).toEqual([resolved]);
+    const approved = await account(id);
+    expect(approved.status).toBe("approved");
+    expect(receipt(approved)).toEqual(originalReceipt);
+    const businesses = await db.select().from(businessesTable).where(eq(businessesTable.ownerId, id));
+    expect(businesses).toHaveLength(1);
+    expect(meetingEmail.sendMeetingEmail).toHaveBeenCalledTimes(1);
+    expect(createCheckout).not.toHaveBeenCalled();
+
+    // This conflict must come from the stored terminal status, not a leaked
+    // claim, and must not repeat activation or mutate the saved receipt.
+    expect(await withDeadLetterClaim(deadLetter.id, async () => "released")).toEqual({
+      claimed: true, result: "released",
+    });
+    const repeated = await retry(deadLetter.id);
+    expect(repeated.status).toBe(409);
+    expect(repeated.body).toEqual({ error: "Already resolved" });
+    expect(await eventRows(event)).toEqual([resolved]);
+    expect(receipt(await account(id))).toEqual(originalReceipt);
     expect(await account(id)).toEqual(approved);
     expect(await db.select().from(businessesTable).where(eq(businessesTable.ownerId, id))).toEqual(businesses);
     expect(meetingEmail.sendMeetingEmail).toHaveBeenCalledTimes(1);

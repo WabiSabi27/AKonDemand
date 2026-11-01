@@ -15,6 +15,7 @@ import { router } from "expo-router";
 
 import { useApp } from "@/context/AppContext";
 import { useColors } from "@/hooks/useColors";
+import { PaymentWebhookStatus } from "@/components/PaymentWebhookStatus";
 
 /**
  * /(admin-tabs)/index — operational metrics dashboard (Phase 3 #9).
@@ -107,6 +108,8 @@ export default function AdminOverviewTab() {
         <Text style={styles.headerTitle}>Platform Overview</Text>
         <Text style={styles.headerSub}>AK On Demand LLC</Text>
       </View>
+
+      <PaymentWebhookStatus readiness={data?.paymentWebhook} failed={Boolean(metricsQ.error)} />
 
       {metricsQ.isLoading ? (
         <View style={styles.center}>

@@ -34,12 +34,17 @@ async function promptly<T>(work: Promise<T>): Promise<T> {
 }
 
 describe("dead-letter claim connection budget", () => {
-  it("reclaims after SIGKILL in a fresh process without losing the committed attempt or receipt", async () => {
-    const id = `${TEST_PREFIX}_process_crash`;
+  it.each([
+    { boundary: "before recording an attempt", mode: "hold-before-attempt", ready: "claim-acquired", attemptCommitted: false, count: 1 },
+    { boundary: "after committing an attempt", mode: "hold", ready: "attempt-committed", attemptCommitted: true, count: 1 },
+    { boundary: "after committing attempts at full capacity", mode: "hold-many", ready: "attempts-committed", attemptCommitted: true, count: DEAD_LETTER_CLAIM_LIMIT },
+  ] as const)("reclaims after SIGKILL $boundary in a fresh process without losing the saved alert or receipt", async ({ mode, ready, attemptCommitted, count }) => {
+    const ids = Array.from({ length: count }, (_, index) => `${TEST_PREFIX}_process_crash_${mode}_${index}`);
+    const multiple = mode === "hold-many";
     const directory = await mkdtemp(join(tmpdir(), "dead-letter-crash-"));
     const children: ReturnType<typeof startWorker>[] = [];
-    function startWorker(mode: "hold" | "probe" | "recover") {
-      const child = fork(join(directory, "worker.cjs"), [mode, id], {
+    function startWorker(mode: "hold" | "hold-before-attempt" | "probe" | "recover" | "hold-many" | "probe-many" | "recover-many") {
+      const child = fork(join(directory, "worker.cjs"), [mode, ...ids], {
         execArgv: [],
         silent: true,
         // This worker needs only Postgres, never payment credentials.
@@ -71,14 +76,14 @@ describe("dead-letter claim connection budget", () => {
       children.push(worker);
       return worker;
     }
-    const readAlert = async () => (await db.select().from(stripeWebhookDeadLetterTable)
-      .where(eq(stripeWebhookDeadLetterTable.id, id)))[0];
-    const readReceipt = async () => (await db.select({
+    const readAlerts = () => Promise.all(ids.map(async id => (await db.select().from(stripeWebhookDeadLetterTable)
+      .where(eq(stripeWebhookDeadLetterTable.id, id)))[0]));
+    const readReceipts = () => Promise.all(ids.map(async id => (await db.select({
       sessionId: bizAccountsTable.onboardingSessionId,
       paidAt: bizAccountsTable.onboardingPaidAt,
       amountCents: bizAccountsTable.onboardingPaidAmountCents,
       currency: bizAccountsTable.onboardingPaidCurrency,
-    }).from(bizAccountsTable).where(eq(bizAccountsTable.id, id)))[0];
+    }).from(bizAccountsTable).where(eq(bizAccountsTable.id, id)))[0]));
     try {
       // Bundle the real claim module into a standalone Node program, without
       // importing Vitest setup, app boot, or payment clients in the child.
@@ -88,63 +93,75 @@ describe("dead-letter claim connection budget", () => {
         bundle: true, platform: "node", format: "cjs", external: ["pg-native"],
         logLevel: "silent",
       });
-      await db.insert(bizAccountsTable).values({
+      await db.insert(bizAccountsTable).values(ids.map((id, index) => ({
         id, email: `${id}@example.test`, businessName: "Synthetic crash fixture",
         ownerName: "Synthetic Owner", passwordHash: "unused", businessType: "home-based",
         status: "accepted", expiresAt: new Date(Date.now() + 86_400_000),
         onboardingSessionId: `cs_${id}`, onboardingPaidAt: new Date("2026-01-02T03:04:05Z"),
-        onboardingPaidAmountCents: 6400, onboardingPaidCurrency: "cad",
-      });
-      await db.insert(stripeWebhookDeadLetterTable).values({
+        onboardingPaidAmountCents: 6400 + index, onboardingPaidCurrency: index % 2 ? "usd" : "cad",
+      })));
+      await db.insert(stripeWebhookDeadLetterTable).values(ids.map((id, index) => ({
         id, eventId: `evt_${id}`, eventType: "checkout.session.completed",
         handlerName: "synthetic_crash_handler", payload: { syntheticAccountId: id },
-        lastError: "synthetic interrupted recovery", attempts: 1,
-      });
-      const originalAlert = await readAlert();
-      const originalReceipt = await readReceipt();
-      const holder = startWorker("hold");
-      expect(await holder.message).toEqual({ type: "attempt-committed" });
+        lastError: "synthetic interrupted recovery", attempts: index + 1,
+      })));
+      const originalAlerts = await readAlerts();
+      const originalReceipts = await readReceipts();
+      const holder = startWorker(mode);
+      expect(await holder.message).toEqual(multiple ? { type: ready, ids } : { type: ready });
       expect(holder.child.exitCode).toBeNull();
-      const committedAlert = await readAlert();
-      expect(committedAlert).toEqual({
-        ...originalAlert, attempts: 2, lastAttemptAt: expect.any(Date),
-      });
-      expect(await readReceipt()).toEqual(originalReceipt);
+      const heldAlerts = await readAlerts();
+      expect(heldAlerts).toEqual(originalAlerts.map(alert => attemptCommitted
+        ? { ...alert, attempts: alert.attempts + 1, lastAttemptAt: expect.any(Date) }
+        : alert));
+      expect(await readReceipts()).toEqual(originalReceipts);
 
       // A genuinely different process must observe PostgreSQL exclusion, not
       // just the parent's in-memory admission set.
-      const probe = startWorker("probe");
+      const probe = startWorker(multiple ? "probe-many" : "probe");
       expect(await probe.message).toEqual({
-        type: "result", result: { claimed: false, reason: "locked" },
+        type: "result",
+        result: multiple
+          ? ids.map(id => ({ id, claimed: false, reason: "locked" }))
+          : { claimed: false, reason: "locked" },
       });
       expect(await promptly(probe.exited)).toEqual({ code: 0, signal: null });
       expect(holder.child.kill("SIGKILL")).toBe(true);
       expect(await promptly(holder.exited)).toEqual({ code: null, signal: "SIGKILL" });
+      expect(await readAlerts()).toEqual(heldAlerts);
+      expect(await readReceipts()).toEqual(originalReceipts);
 
       // No row reset, lease expiry, graceful unlock, or application restart
       // hook is allowed between killing the holder and this new process.
-      const recovery = startWorker("recover");
-      expect(await recovery.message).toEqual({
-        type: "result",
+      const recovery = startWorker(multiple ? "recover-many" : "recover");
+      const recovered = ids.map((id, index) => ({
+        ...(multiple ? { id } : {}),
+        claimed: true,
         result: {
-          claimed: true,
-          result: {
-            attempts: 2, status: "pending",
-            receipt: { ...originalReceipt, paidAt: originalReceipt.paidAt!.toISOString() },
+          attempts: heldAlerts[index].attempts, status: "pending",
+          receipt: {
+            ...originalReceipts[index],
+            paidAt: originalReceipts[index].paidAt!.toISOString(),
           },
         },
+      }));
+      expect(await recovery.message).toEqual({
+        type: "result",
+        result: multiple ? recovered : recovered[0],
       });
       expect(await promptly(recovery.exited)).toEqual({ code: 0, signal: null });
-      expect(await readAlert()).toEqual(committedAlert);
-      expect(await readReceipt()).toEqual(originalReceipt);
+      expect(await readAlerts()).toEqual(heldAlerts);
+      expect(await readReceipts()).toEqual(originalReceipts);
     } finally {
       // Kill before deleting fixtures, including on assertion/IPC failures.
       for (const { child } of children) {
         if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
       }
       await promptly(Promise.all(children.map(({ exited }) => exited)));
-      await db.delete(stripeWebhookDeadLetterTable).where(eq(stripeWebhookDeadLetterTable.id, id));
-      await db.delete(bizAccountsTable).where(eq(bizAccountsTable.id, id));
+      for (const id of ids) {
+        await db.delete(stripeWebhookDeadLetterTable).where(eq(stripeWebhookDeadLetterTable.id, id));
+        await db.delete(bizAccountsTable).where(eq(bizAccountsTable.id, id));
+      }
       await rm(directory, { recursive: true, force: true });
     }
   }, 30_000);

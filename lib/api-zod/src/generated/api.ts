@@ -817,6 +817,19 @@ export const GetAdminMetricsResponse = zod.object({
       failedCount: zod.number(),
     })
     .describe("Task"),
+  paymentWebhook: zod
+    .object({
+      status: zod.enum(["checking", "ready", "unavailable"]),
+      environment: zod.enum(["preview", "production"]),
+      reason: zod
+        .string()
+        .describe(
+          "Fixed safe explanation; never contains credentials or callback identifiers.",
+        ),
+    })
+    .describe(
+      "Read-only startup verification; API health does not imply callback availability.",
+    ),
 });
 
 /**

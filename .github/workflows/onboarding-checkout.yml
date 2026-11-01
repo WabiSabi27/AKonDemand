@@ -1,0 +1,84 @@
+name: Onboarding checkout regression
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: onboarding-checkout-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  onboarding-checkout:
+    name: Onboarding checkout protection
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: checkout_ci
+          # Disposable runner-only service, never an application database.
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 127.0.0.1:5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d checkout_ci"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      CI: 'true'
+      NODE_ENV: test
+      DATABASE_URL: postgresql://postgres@127.0.0.1:5432/checkout_ci
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.26.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+      - name: Install locked API dependencies
+        run: pnpm --filter workspace --filter @workspace/api-server... install --frozen-lockfile
+      - name: Build shared type declarations
+        run: pnpm exec tsc --build lib/db/tsconfig.json lib/api-zod/tsconfig.json
+      - name: Check API types
+        run: pnpm --filter @workspace/api-server run typecheck
+      - name: Run installed SDK transport regressions without application setup
+        env:
+          DATABASE_URL: ''
+          SESSION_SECRET: ''
+        run: >-
+          pnpm --filter @workspace/api-server exec vitest run
+          --config vitest.transport.config.ts
+          tests/transport/onboardingCheckoutTransport.test.ts
+          tests/transport/onboardingCheckoutEpipe.test.ts
+          tests/transport/onboardingCheckoutHttpClient.test.ts
+      - name: Generate an ephemeral test signing key
+        run: |
+          node --input-type=module <<'NODE'
+          import { randomBytes } from 'node:crypto';
+          import { appendFileSync } from 'node:fs';
+          const key = randomBytes(32).toString('hex');
+          console.log(`::add-mask::${key}`);
+          appendFileSync(process.env.GITHUB_ENV, `SESSION_SECRET=${key}\n`);
+          NODE
+      - name: Initialize only the disposable CI database
+        run: |
+          node -e "if (process.env.DATABASE_URL !== 'postgresql://postgres@127.0.0.1:5432/checkout_ci') throw new Error('Refusing schema initialization outside the disposable CI database')"
+          pnpm --filter @workspace/db run push
+      # The route tests stub the loaded Stripe export before making requests.
+      # Do not start the API, seed application accounts or use payment secrets.
+      - name: Run checkout API and deadline regression tests
+        run: >-
+          pnpm --filter @workspace/api-server exec vitest run
+          tests/onboardingCheckout.test.ts tests/onboardingCheckoutLimits.test.ts

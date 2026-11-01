@@ -2921,6 +2921,21 @@ components:
             $ref: "#/components/schemas/AdminEmailOutboxEntry"
       required: [entries]
 
+    AdminWebhookReadiness:
+      type: object
+      description: Read-only startup verification; API health does not imply callback availability.
+      properties:
+        status:
+          type: string
+          enum: [checking, ready, unavailable]
+        environment:
+          type: string
+          enum: [preview, production]
+        reason:
+          type: string
+          description: Fixed safe explanation; never contains credentials or callback identifiers.
+      required: [status, environment, reason]
+
     AdminMetrics:
       type: object
       properties:
@@ -2975,7 +2990,9 @@ components:
           properties:
             failedCount: { type: integer }
           required: [failedCount]
-      required: [gmv, subscriptions, funnel, churn, topCategories, emailOutbox]
+        paymentWebhook:
+          $ref: "#/components/schemas/AdminWebhookReadiness"
+      required: [gmv, subscriptions, funnel, churn, topCategories, emailOutbox, paymentWebhook]
 
     SetMyExternalCalendarRequest:
       type: object
