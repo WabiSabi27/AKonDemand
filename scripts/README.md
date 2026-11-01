@@ -70,7 +70,30 @@ are cleared when operations settle. Cleanup is always attempted with its own
 deadline. If a driver still holds resources after a timeout, the CLI flushes its
 failure to stderr and exits nonzero itself. No JSON is emitted, even when the
 report was complete before shutdown stalled. A saved empty output file is not
-a successful report. These deadlines do not limit the duration of a Stripe scan.
+a successful report.
+
+### Stripe and total audit deadlines
+
+`AUDIT_STRIPE_TIMEOUT_MS` bounds each connector lookup (including its response
+body), balance check, Checkout page, and optional PaymentIntent/charge/refund/
+dispute read. It defaults to 30000 milliseconds. Audit Stripe requests have no
+automatic SDK retries. Connector fetches receive cancellation signals; Stripe
+requests receive positive integer transport timeouts, with a separate logical
+deadline even if a reader ignores cancellation.
+
+`AUDIT_TIMEOUT_MS` defaults to 300000 milliseconds and bounds the total audit
+before cleanup, not a fresh budget per page. This includes connector setup,
+database acquisition/snapshot, and optional inspection. As with the database
+settings, both values must be positive integer milliseconds at most 2147483647.
+Pool cleanup retains its separate shutdown budget even when the total deadline
+expires.
+
+A stalled Checkout scan fails with nonzero exit and empty stdout, even after
+earlier pages succeeded. A timed-out optional inspection read remains
+`unavailable`, never evidence of no refunds or disputes; independently verified
+settled totals are retained. Expiry of the total audit budget is fatal even
+during optional inspection, and no report is emitted. These limits apply only
+to this CLI, not API requests, webhook handling, or other Stripe clients.
 
 Treat the output as sensitive financial information. To save it locally:
 
