@@ -617,11 +617,16 @@ it.each(["published.example.test", "expo.example.test"])(
 
 it.each(
   (["ios", "android"] as const).flatMap(platform =>
-    (["online", "offline"] as const).map(connection => ({ platform, connection })),
+    ([
+      { connection: "online", finalStatus: "accepted" },
+      { connection: "online", finalStatus: "approved" },
+      { connection: "online", finalStatus: "rejected" },
+      { connection: "offline", finalStatus: "accepted" },
+    ] as const).map(scenario => ({ platform, ...scenario })),
   ),
 )(
-  "does not retry checkout after the $platform browser fails to open, and recovers with $connection status checks only",
-  async ({ platform, connection }) => {
+  "recovers to $finalStatus with $connection explicit status checks after $platform browser launch failure without retrying checkout",
+  async ({ platform, connection, finalStatus }) => {
     Platform.OS = platform;
     route.params = { id: "ba_native_browser_failure_fixture" };
     vi.mocked(WebBrowser.openAuthSessionAsync).mockRejectedValueOnce(new Error("Synthetic browser launch failure"));
@@ -656,13 +661,13 @@ it.each(
         expect(checkout).toHaveBeenCalledOnce();
         expect(WebBrowser.openAuthSessionAsync).toHaveBeenCalledExactlyOnceWith(checkoutUrl, null);
         expect(open).not.toHaveBeenCalled();
-        expect(AsyncStorage.removeItem).not.toHaveBeenCalled();
       };
       const expectStartError = () => {
         expect(screen.getByText("Something went wrong")).toBeTruthy();
         expect(screen.getByText("Could not start the onboarding payment. Please try again.")).toBeTruthy();
         expect(screen.queryByText("Opening secure checkout…")).toBeNull();
         expect(screen.queryByRole("button", { name: /^Pay / })).toBeNull();
+        expect(AsyncStorage.removeItem).not.toHaveBeenCalled();
         expectNoRetry();
       };
       expectStartError();
@@ -676,6 +681,8 @@ it.each(
 
       if (connection === "offline") {
         status.mockImplementation(() => { throw new TypeError("Synthetic offline status check"); });
+      } else {
+        status.mockImplementation(() => Response.json({ id: route.params.id, status: finalStatus }));
       }
       await act(async () => {
         fireEvent.click(screen.getByRole("button", { name: "Check application status" }));
@@ -686,6 +693,7 @@ it.each(
           expect(screen.queryByText("You're accepted!")).toBeNull();
           expect(screen.queryByRole("button", { name: /^Pay / })).toBeNull();
           expect(screen.queryByText("Opening secure checkout…")).toBeNull();
+          expect(AsyncStorage.removeItem).not.toHaveBeenCalled();
           expectNoRetry();
         };
         // Exhaust all fifteen reads at t=0, 2, …, 28 seconds.
@@ -720,16 +728,34 @@ it.each(
         await advance();
       }
       const expectedStatusCalls = connection === "offline" ? 17 : 2;
-      expect(status).toHaveBeenCalledTimes(expectedStatusCalls);
-      expect(screen.getByText("You're accepted!")).toBeTruthy();
-      expect(screen.queryByText("Something went wrong")).toBeNull();
-      expect(screen.getByRole("button", { name: "Pay $2.00 onboarding fee" })).toBeTruthy();
-      expectNoRetry();
-      // Restoring the payment action is not permission to submit it.
+      const expectRecovered = () => {
+        expect(status).toHaveBeenCalledTimes(expectedStatusCalls);
+        const title = {
+          accepted: "You're accepted!",
+          approved: "You're all set!",
+          rejected: "Application not approved",
+        }[finalStatus];
+        expect(screen.getByText(title)).toBeTruthy();
+        expect(screen.queryByText("Something went wrong")).toBeNull();
+        expect(screen.queryByText("Could not start the onboarding payment. Please try again.")).toBeNull();
+        expect(screen.queryByText("Opening secure checkout…")).toBeNull();
+        expect(screen.queryByRole("button", { name: "Check application status" })).toBeNull();
+        if (finalStatus === "accepted") {
+          expect(screen.getByRole("button", { name: "Pay $2.00 onboarding fee" })).toBeTruthy();
+          expect(AsyncStorage.removeItem).not.toHaveBeenCalled();
+        } else {
+          expect(screen.queryByText("You're accepted!")).toBeNull();
+          expect(screen.queryByRole("button", { name: /^Pay / })).toBeNull();
+          expect(AsyncStorage.removeItem).toHaveBeenCalledExactlyOnceWith("akodd_application_id");
+        }
+        expectNoRetry();
+      };
+      expectRecovered();
+      // Refreshes must neither restore payment on a final decision nor submit it on acceptance.
       await act(async () => { await client.refetchQueries(); });
       await advance(30_000);
-      expect(status).toHaveBeenCalledTimes(expectedStatusCalls);
-      expectNoRetry();
+      expect(fees).toHaveBeenCalledTimes(connection === "offline" ? 4 : 3);
+      expectRecovered();
     } finally {
       cleanup();
       client.clear();
@@ -739,11 +765,14 @@ it.each(
 );
 
 it.each([
-  ["ios", "cancel"], ["ios", "dismiss"], ["android", "cancel"], ["android", "dismiss"],
-])("refreshes immediately after %s browser %s and allows retry without restarting the application", async (platform, type) => {
-  Platform.OS = platform as typeof Platform.OS;
+  ["ios", WebBrowserResultType.CANCEL],
+  ["ios", WebBrowserResultType.DISMISS],
+  ["android", WebBrowserResultType.CANCEL],
+  ["android", WebBrowserResultType.DISMISS],
+] as const)("refreshes immediately after %s browser %s and allows retry without restarting the application", async (platform, type) => {
+  Platform.OS = platform;
   route.params = { id: "ba_native_fixture" };
-  vi.mocked(WebBrowser.openAuthSessionAsync).mockResolvedValue({ type } as WebBrowser.WebBrowserAuthSessionResult);
+  vi.mocked(WebBrowser.openAuthSessionAsync).mockResolvedValue({ type });
   const checkout = vi.fn(() => Response.json({ checkoutUrl: "https://checkout.example.test/existing-native-session" }));
   const status = vi.fn(() => Response.json({ id: route.params.id, status: "accepted" }));
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
@@ -765,6 +794,118 @@ it.each([
   expect(checkout).toHaveBeenCalledTimes(2);
   expect(WebBrowser.openAuthSessionAsync).toHaveBeenLastCalledWith("https://checkout.example.test/existing-native-session", null);
   client.clear();
+});
+
+it.each(
+  (["ios", "android"] as const).flatMap(platform =>
+    ([WebBrowserResultType.CANCEL, WebBrowserResultType.DISMISS] as const).flatMap(type =>
+      (["network", "503"] as const).map(failure => ({ platform, type, failure })),
+    ),
+  ),
+)("blocks stale payment after $platform browser $type and a $failure status failure until a deliberate status check", async ({ platform, type, failure }) => {
+  Platform.OS = platform;
+  route.params = { id: "ba_native_cancel_offline_fixture" };
+  let closeBrowser!: (result: WebBrowser.WebBrowserAuthSessionResult) => void;
+  vi.mocked(WebBrowser.openAuthSessionAsync).mockImplementationOnce(() =>
+    new Promise(resolve => { closeBrowser = resolve; }),
+  );
+  const open = vi.spyOn(window, "open").mockImplementation(() => null);
+  const checkoutUrl = "https://checkout.example.test/native-cancel-offline";
+  const checkout = vi.fn(() => Response.json({ checkoutUrl }));
+  let available = true;
+  const status = vi.fn(() => {
+    if (!available) {
+      if (failure === "network") throw new TypeError("Synthetic outage after browser cancellation");
+      return Response.json({ error: "Status temporarily unavailable" }, { status: 503 });
+    }
+    return Response.json({
+      id: route.params.id, status: "accepted",
+      applicationPayment: { amountCents: 1900, currency: "usd" },
+    });
+  });
+  const fees = vi.fn(() => Response.json({ applicationFeeCents: 100, onboardingFeeCents: 200, currency: "usd" }));
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(String(input));
+    expect(url.origin).toBe("https://api.example.test");
+    if (url.pathname === `/api/biz-accounts/${route.params.id}/onboarding-checkout`) {
+      expect(init?.method).toBe("POST");
+      expect(JSON.parse(init!.body as string)).toEqual({ expectedOnboardingFeeCents: 200 });
+      return checkout();
+    }
+    expect(init?.method ?? "GET").toBe("GET");
+    if (url.pathname === "/api/application-fees") return fees();
+    expect(url.pathname).toBe(`/api/biz-accounts/${route.params.id}/status`);
+    return status();
+  }));
+  const { client } = renderDashboard(<PaymentReturnScreen />);
+  try {
+    const pay = await screen.findByRole("button", { name: "Pay $2.00 onboarding fee" });
+    expect(screen.getByText("Application fee paid: $19.00")).toBeTruthy();
+    expect(checkout).not.toHaveBeenCalled();
+    expect(WebBrowser.openAuthSessionAsync).not.toHaveBeenCalled();
+    fireEvent.click(pay);
+    await waitFor(() => expect(WebBrowser.openAuthSessionAsync).toHaveBeenCalledExactlyOnceWith(checkoutUrl, null));
+    expect(status).toHaveBeenCalledOnce();
+    expect(screen.getByText("Opening secure checkout…")).toBeTruthy();
+
+    // Fail only the refresh after an actually opened browser returns cancel/dismiss.
+    vi.useFakeTimers();
+    await act(async () => {
+      available = false;
+      closeBrowser({ type });
+    });
+    await advance();
+
+    const expectNoAutomaticCheckout = () => {
+      expect(checkout).toHaveBeenCalledOnce();
+      expect(WebBrowser.openAuthSessionAsync).toHaveBeenCalledExactlyOnceWith(checkoutUrl, null);
+      expect(open).not.toHaveBeenCalled();
+      expect(AsyncStorage.removeItem).not.toHaveBeenCalled();
+    };
+    const expectBlocked = () => {
+      expect(screen.getByText("Could not refresh your application status. Your application has been kept. Check its status before continuing.")).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Check application status" })).toBeTruthy();
+      expect(screen.queryByRole("button", { name: /^Pay / })).toBeNull();
+      expect(screen.queryByText("You're accepted!")).toBeNull();
+      expect(screen.queryByText(/Your application is still accepted/)).toBeNull();
+      expect(screen.queryByText("Payment cancelled")).toBeNull();
+      expect(screen.queryByText("Opening secure checkout…")).toBeNull();
+      expect(status).toHaveBeenCalledTimes(2);
+      expectNoAutomaticCheckout();
+    };
+    expectBlocked();
+    await advance(30_000);
+    await act(async () => { await client.refetchQueries(); });
+    expect(fees).toHaveBeenCalledTimes(2);
+    expectBlocked();
+
+    // Connectivity returning cannot restore stale acceptance or retry payment.
+    available = true;
+    await act(async () => { await client.refetchQueries(); });
+    await advance(30_000);
+    expectBlocked();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Check application status" }));
+    });
+    await advance();
+    const expectRecovered = () => {
+      expect(status).toHaveBeenCalledTimes(3);
+      expect(screen.getByText("You're accepted!")).toBeTruthy();
+      expect(screen.getByText("Application fee paid: $19.00")).toBeTruthy();
+      expect(screen.queryByText("Something went wrong")).toBeNull();
+      expect(screen.getByRole("button", { name: "Pay $2.00 onboarding fee" }).hasAttribute("disabled")).toBe(false);
+      expectNoAutomaticCheckout();
+    };
+    expectRecovered();
+    await act(async () => { await client.refetchQueries(); });
+    await advance(30_000);
+    expectRecovered();
+  } finally {
+    cleanup();
+    client.clear();
+    vi.useRealTimers();
+  }
 });
 
 it.each(

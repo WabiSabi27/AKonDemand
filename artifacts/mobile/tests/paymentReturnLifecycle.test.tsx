@@ -2,6 +2,9 @@ import React, { StrictMode } from "react";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import * as WebBrowser from "expo-web-browser";
+import { WebBrowserResultType } from "expo-web-browser/build/WebBrowser.types";
+import { Platform } from "react-native";
 import { QueryClientProvider } from "@tanstack/react-query";
 import PaymentReturnScreen from "../app/payment-return";
 import { advance, renderDashboard } from "./support/dashboard";
@@ -23,6 +26,7 @@ vi.mock("@react-native-async-storage/async-storage", () => ({
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
+  Platform.OS = "web";
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
@@ -34,7 +38,7 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-function mockStatus(read: (signal?: AbortSignal | null) => Response | Promise<Response>) {
+function mockStatus(read: (signal?: AbortSignal | null) => Response | Promise<Response>, applicationId?: string) {
   const status = vi.fn(read);
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     expect(init?.method ?? "GET").toBe("GET");
@@ -42,7 +46,7 @@ function mockStatus(read: (signal?: AbortSignal | null) => Response | Promise<Re
     if (path === "/api/application-fees") {
       return Response.json({ applicationFeeCents: 100, onboardingFeeCents: 200, currency: "usd" });
     }
-    expect(path).toBe(`/api/biz-accounts/${route.params.id}/status`);
+    expect(path).toBe(`/api/biz-accounts/${applicationId ?? route.params.id}/status`);
     return status(init?.signal);
   }));
   return status;
@@ -75,7 +79,7 @@ it.each(["application", "onboarding", "cancelled"] as const)(
     expect(screen.queryByText("Confirming your payment…")).toBeNull();
     expect(screen.getByText(phase === "onboarding"
       ? "Onboarding payment confirmation is delayed"
-      : phase === "cancelled" ? "Something went wrong" : "Payment is still processing")).toBeTruthy();
+      : "Something went wrong")).toBeTruthy();
     expect(signal.aborted).toBe(true);
     expect(status).toHaveBeenCalledOnce();
     expect(AsyncStorage.removeItem).not.toHaveBeenCalled();
@@ -159,6 +163,81 @@ it.each(["before retry", "during retry", "late failure"] as const)(
   },
 );
 
+it.each([
+  ["ios", WebBrowserResultType.CANCEL],
+  ["ios", WebBrowserResultType.DISMISS],
+  ["android", WebBrowserResultType.CANCEL],
+  ["android", WebBrowserResultType.DISMISS],
+] as const)("ignores an already-open %s checkout's late %s after another application mounts", async (platform, type) => {
+  Platform.OS = platform;
+  route.params = { id: "ba_old_browser_fixture" };
+  const browser = deferred<WebBrowser.WebBrowserAuthSessionResult>();
+  vi.mocked(WebBrowser.openAuthSessionAsync).mockReturnValueOnce(browser.promise);
+  const checkoutUrl = "https://checkout.example.test/old-browser-session";
+  const checkout = vi.fn(() => Response.json({ checkoutUrl }));
+  const status = vi.fn<(id: string) => Response>();
+  status.mockImplementation(id => Response.json({
+    id,
+    // Any obsolete read after navigation would also try to clear the saved id.
+    status: id === "ba_old_browser_fixture" && status.mock.calls.length > 1 ? "approved" : "accepted",
+    applicationPayment: { amountCents: id === "ba_old_browser_fixture" ? 1900 : 7300, currency: "usd" },
+  }));
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = new URL(String(input)).pathname;
+    if (path === "/api/biz-accounts/ba_old_browser_fixture/onboarding-checkout") {
+      expect(init?.method).toBe("POST");
+      expect(JSON.parse(init!.body as string)).toEqual({ expectedOnboardingFeeCents: 200 });
+      return checkout();
+    }
+    expect(init?.method ?? "GET").toBe("GET");
+    if (path === "/api/application-fees") {
+      return Response.json({ applicationFeeCents: 100, onboardingFeeCents: 200, currency: "usd" });
+    }
+    if (path === "/api/biz-accounts/ba_old_browser_fixture/status") return status("ba_old_browser_fixture");
+    expect(path).toBe("/api/biz-accounts/ba_new_browser_fixture/status");
+    return status("ba_new_browser_fixture");
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  vi.useFakeTimers();
+  const first = renderDashboard(<PaymentReturnScreen />);
+  await advance();
+  expect(screen.getByText("Application fee paid: $19.00")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Pay $2.00 onboarding fee" }));
+  await advance();
+  // The browser is already open, not merely waiting for a checkout response.
+  expect(WebBrowser.openAuthSessionAsync).toHaveBeenCalledExactlyOnceWith(checkoutUrl, null);
+  expect(screen.getByText("Opening secure checkout…")).toBeTruthy();
+  first.unmount();
+  first.client.clear();
+
+  // Load a different saved application in a distinct component instance.
+  route.params = {};
+  vi.mocked(AsyncStorage.getItem).mockResolvedValueOnce("ba_new_browser_fixture");
+  const second = renderDashboard(<PaymentReturnScreen />);
+  await advance();
+  expect(AsyncStorage.getItem).toHaveBeenCalledExactlyOnceWith("akodd_application_id");
+  const expectNewApplicationUntouched = () => {
+    expect(screen.getByText("You're accepted!")).toBeTruthy();
+    expect(screen.getByText("Application fee paid: $73.00")).toBeTruthy();
+    expect(screen.queryByText("Application fee paid: $19.00")).toBeNull();
+    expect(screen.queryByText(/Onboarding checkout was closed/)).toBeNull();
+    expect(screen.getByRole("button", { name: "Pay $2.00 onboarding fee" })).toBeTruthy();
+    expect(AsyncStorage.removeItem).not.toHaveBeenCalled();
+    expect(status.mock.calls).toEqual([["ba_old_browser_fixture"], ["ba_new_browser_fixture"]]);
+    expect(checkout).toHaveBeenCalledOnce();
+    expect(WebBrowser.openAuthSessionAsync).toHaveBeenCalledOnce();
+    expect(fetchMock).toHaveBeenCalledTimes(5); // Two fee reads, two status reads, one checkout.
+  };
+  expectNewApplicationUntouched();
+  await act(async () => { browser.resolve({ type }); });
+  await advance();
+  expectNewApplicationUntouched();
+  await advance(60_000);
+  expectNewApplicationUntouched();
+  second.unmount();
+  second.client.clear();
+});
+
 it.each(["pending", "approved", "rejected", "accepted", "network failure"])(
   "ignores a late %s response after leaving confirmation, including on a newly mounted screen",
   async outcome => {
@@ -221,6 +300,115 @@ it("ignores a saved application id that finishes loading after unmount", async (
   await advance(60_000);
   expect(status).not.toHaveBeenCalled();
   expect(AsyncStorage.removeItem).not.toHaveBeenCalled();
+  view.client.clear();
+});
+
+const storageRecoveryMessage = "Could not read your saved application. Your payment status has not been confirmed. Please check your application status again. Do not submit another payment.";
+
+it.each(["application", "onboarding", "cancelled"])(
+  "recovers from initial and manual saved-id read failures in the %s phase without opening checkout",
+  async phase => {
+    route.params = phase === "onboarding"
+      ? { success: "true", phase: "onboarding" }
+      : phase === "cancelled" ? { cancelled: "true" } : {};
+    const initialRead = deferred<string | null>();
+    const retryRead = deferred<string | null>();
+    const recoveredRead = deferred<string | null>();
+    vi.mocked(AsyncStorage.getItem)
+      .mockReturnValueOnce(initialRead.promise)
+      .mockReturnValueOnce(retryRead.promise)
+      .mockReturnValueOnce(recoveredRead.promise);
+    const id = "ba_storage_recovery_fixture";
+    const status = mockStatus(() => Response.json({ id, status: "accepted" }), id);
+    const open = vi.spyOn(window, "open").mockImplementation(() => null);
+    vi.useFakeTimers();
+    const view = renderDashboard(<PaymentReturnScreen />);
+    await advance();
+    expect(screen.getByText("Confirming your payment…")).toBeTruthy();
+    await act(async () => { initialRead.reject(new Error("Private storage error")); });
+    expect(screen.getByText(storageRecoveryMessage)).toBeTruthy();
+    expect(screen.queryByText(/Please start over/)).toBeNull();
+    expect(screen.queryByText("Private storage error")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Check application status" }));
+    await act(async () => { retryRead.reject(new Error("Storage still unavailable")); });
+    expect(screen.getByText(storageRecoveryMessage)).toBeTruthy();
+    expect(status).not.toHaveBeenCalled();
+    expect(AsyncStorage.removeItem).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Check application status" }));
+    await act(async () => { recoveredRead.resolve(id); });
+    await advance();
+    expect(status).toHaveBeenCalledOnce();
+    if (phase === "onboarding") {
+      // A storage retry must retain the onboarding phase: accepted is not
+      // evidence that another payment is safe.
+      await advance(30_000);
+      expect(screen.getByRole("button", { name: "Check payment status" })).toBeTruthy();
+      expect(screen.queryByRole("button", { name: /onboarding fee/i })).toBeNull();
+    } else {
+      expect(screen.getByText("You're accepted!")).toBeTruthy();
+    }
+    expect(AsyncStorage.getItem).toHaveBeenCalledTimes(3);
+    expect(AsyncStorage.getItem).toHaveBeenLastCalledWith("akodd_application_id");
+    expect(AsyncStorage.removeItem).not.toHaveBeenCalled();
+    // The HTTP fixture rejects every non-GET request, including checkout.
+    expect(open).not.toHaveBeenCalled();
+    view.unmount();
+    view.client.clear();
+  },
+);
+
+it("ignores a saved-id read rejection after leaving confirmation", async () => {
+  route.params = {};
+  const storedId = deferred<string | null>();
+  vi.mocked(AsyncStorage.getItem).mockReturnValueOnce(storedId.promise);
+  const status = mockStatus(() => response("accepted"));
+  vi.useFakeTimers();
+  const first = renderDashboard(<PaymentReturnScreen />);
+  await advance();
+  first.unmount();
+  first.client.clear();
+  route.params = { id: "ba_reentered_fixture" };
+  const second = renderDashboard(<PaymentReturnScreen />);
+  await advance();
+  await act(async () => { storedId.reject(new Error("Obsolete storage failure")); });
+  expect(screen.getByText("You're accepted!")).toBeTruthy();
+  expect(screen.queryByText(storageRecoveryMessage)).toBeNull();
+  expect(status).toHaveBeenCalledOnce();
+  expect(AsyncStorage.removeItem).not.toHaveBeenCalled();
+  second.unmount();
+  second.client.clear();
+});
+
+it("ignores an obsolete manual saved-id read rejection after a newer check completes", async () => {
+  route.params = {};
+  const initialRead = deferred<string | null>();
+  const oldRead = deferred<string | null>();
+  const newRead = deferred<string | null>();
+  vi.mocked(AsyncStorage.getItem)
+    .mockReturnValueOnce(initialRead.promise)
+    .mockReturnValueOnce(oldRead.promise)
+    .mockReturnValueOnce(newRead.promise);
+  const id = "ba_newest_storage_fixture";
+  const status = mockStatus(() => Response.json({ id, status: "accepted" }), id);
+  vi.useFakeTimers();
+  const view = renderDashboard(<PaymentReturnScreen />);
+  await act(async () => { initialRead.reject(new Error("Initial storage failure")); });
+  const check = screen.getByRole("button", { name: "Check application status" });
+  act(() => {
+    fireEvent.click(check);
+    fireEvent.click(check);
+  });
+  await act(async () => { newRead.resolve(id); });
+  await advance();
+  expect(screen.getByText("You're accepted!")).toBeTruthy();
+  await act(async () => { oldRead.reject(new Error("Obsolete storage failure")); });
+  await advance(60_000);
+  expect(screen.getByText("You're accepted!")).toBeTruthy();
+  expect(screen.queryByText(storageRecoveryMessage)).toBeNull();
+  expect(status).toHaveBeenCalledOnce();
+  expect(AsyncStorage.removeItem).not.toHaveBeenCalled();
+  view.unmount();
   view.client.clear();
 });
 
