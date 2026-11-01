@@ -1,0 +1,59 @@
+name: Audit deadline and cancellation regression
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: audit-cancellation-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit-cancellation:
+    name: Audit cancellation (PostgreSQL)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: audit_ci
+          # Disposable runner-only test service; no application credentials.
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 127.0.0.1:5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d audit_ci"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      CI: 'true'
+      NODE_ENV: test
+      DATABASE_URL: postgresql://postgres@127.0.0.1:5432/audit_ci
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.26.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+      - name: Install locked audit dependencies
+        run: pnpm --filter workspace --filter @workspace/scripts... install --frozen-lockfile
+      - name: Build database type declarations
+        run: pnpm exec tsc --build lib/db/tsconfig.json
+      - name: Check scripts types
+        run: pnpm --filter @workspace/scripts run typecheck
+      # The CLI loader replaces Stripe and restricts reads to disposable schemas.
+      # No API startup, application seed, payment service or real Stripe key.
+      - name: Run audit unit and isolated CLI tests
+        run: pnpm --filter @workspace/scripts run test
