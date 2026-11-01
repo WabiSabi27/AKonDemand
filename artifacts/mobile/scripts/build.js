@@ -4,6 +4,7 @@ const { spawn } = require("child_process");
 const { Readable } = require("stream");
 const { pipeline } = require("stream/promises");
 const { checkNativeBuild } = require("./check-native-build.cjs");
+const { stringLiteral, decodeString, stringField, registrationPattern, encodeAssetPath } = require("./native-asset-strings.cjs");
 
 let metroProcess = null;
 
@@ -321,15 +322,17 @@ function extractAssets(timestamp, { projectRoot: root = projectRoot } = {}) {
   const assetsMap = new Map();
   // Metro emits plain registration objects. Read their data, never evaluate
   // bundle code (which includes application startup and arbitrary dependencies).
-  const assetPattern = /\{[^{}]*\bhttpServerLocation\s*:\s*"(?:\\.|[^"\\])*"[^{}]*\}/g;
+  const assetPattern = registrationPattern();
 
   const extractFromBundle = (bundle, platform) => {
     for (const match of bundle.matchAll(assetPattern)) {
       const registration = match[0];
       const field = (name) => {
-        const value = registration.match(new RegExp(`\\b${name}\\s*:\\s*("(?:\\\\.|[^"\\\\])*")`));
-        if (!value) throw new Error(`Invalid ${platform} asset registration: missing ${name}`);
-        return JSON.parse(value[1]);
+        try {
+          return stringField(registration, name);
+        } catch (error) {
+          throw new Error(`Invalid ${platform} asset registration: ${error.message}`);
+        }
       };
       const originalPath = field("httpServerLocation");
       // Intentional remote registrations aren't copied or rewritten.
@@ -481,8 +484,10 @@ function updateBundleUrls(timestamp, baseUrl, {
     let bundle = fs.readFileSync(bundlePath, "utf-8");
 
     bundle = bundle.replace(
-      /httpServerLocation:"(\/[^"]+)"/g,
-      (_match, capturedPath) => {
+      new RegExp(`\\bhttpServerLocation\\s*:\\s*(${stringLiteral})`, "g"),
+      (match, literal) => {
+        const capturedPath = decodeString(literal);
+        if (!capturedPath.startsWith("/")) return match;
         const tempUrl = new URL(`http://localhost:8081${capturedPath}`);
         const unstablePath = tempUrl.searchParams.get("unstable_path");
 
@@ -493,7 +498,8 @@ function updateBundleUrls(timestamp, baseUrl, {
         }
 
         const decodedPath = unstablePath;
-        return `httpServerLocation:"${baseUrl}${prefix.replace(/\/+$/, "")}/${timestamp}/_expo/static/js/${path.posix.join(platform, decodedPath)}"`;
+        const location = `${baseUrl}${prefix.replace(/\/+$/, "")}/${timestamp}/_expo/static/js/${encodeAssetPath(path.posix.join(platform, decodedPath))}`;
+        return `httpServerLocation:${JSON.stringify(location)}`;
       },
     );
 
@@ -536,7 +542,7 @@ function updateManifests(manifests, timestamp, baseUrl, assetsByHash, {
         const assetInfo = assetsByHash.get(`${platform}:${hash}`);
         if (!assetInfo) return;
 
-        asset.url = `${baseUrl}${prefix}/${timestamp}/_expo/static/js/${assetInfo.relativePath}/${assetInfo.filename}`;
+        asset.url = `${baseUrl}${prefix}/${timestamp}/_expo/static/js/${encodeAssetPath(`${assetInfo.relativePath}/${assetInfo.filename}`)}`;
       });
     }
 

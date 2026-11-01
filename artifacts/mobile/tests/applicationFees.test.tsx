@@ -473,6 +473,319 @@ it.each(["network", "503"] as const)("keeps recovered acceptance blocked after a
   }
 });
 
+it.each(["before", "after"] as const)("ignores cancelled pricing retries that settle %s the latest offer", async staleOrder => {
+  const submissions: unknown[] = [];
+  const open = vi.spyOn(window, "open").mockReturnValue({} as Window);
+  const nativeOpen = vi.mocked(WebBrowser.openAuthSessionAsync);
+  nativeOpen.mockReset();
+  const pending: { signal: AbortSignal; resolve: (response: Response) => void }[] = [];
+  const fees = vi.fn<(_init?: RequestInit) => Response | Promise<Response>>(() =>
+    Response.json({ applicationFeeCents: 100, onboardingFeeCents: 200, currency: "usd" }));
+  const status = vi.fn(() => Response.json({ id: "ba_synthetic", status: open.mock.calls.length ? "approved" : "accepted" }));
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = new URL(String(input)).pathname;
+    if (path === "/api/application-fees") {
+      expect(init?.method ?? "GET").toBe("GET");
+      return fees(init);
+    }
+    if (path === "/api/biz-accounts/ba_synthetic/status") return status();
+    expect(path).toBe("/api/biz-accounts/ba_synthetic/onboarding-checkout");
+    expect(init?.method).toBe("POST");
+    submissions.push(JSON.parse(init!.body as string));
+    return submissions.length === 1
+      ? Response.json({ error: "Fee changed" }, { status: 409 })
+      : Response.json({ checkoutUrl: "https://checkout.example.test/rapid-pricing-retry" });
+  }));
+  const { client } = renderDashboard(<PaymentReturnScreen />);
+  try {
+    const initialPay = await screen.findByRole("button", { name: "Pay $2.00 onboarding fee" });
+    vi.useFakeTimers();
+    fees.mockImplementation(() => Response.json({ error: "Pricing unavailable" }, { status: 503 }));
+    await act(async () => { fireEvent.click(initialPay); });
+    await advance();
+    expect(fees).toHaveBeenCalledTimes(2);
+    expect(screen.getByText(/Review the updated details before paying/)).toBeTruthy();
+
+    const expectNoNewCheckout = () => {
+      expect(submissions).toEqual([{ expectedOnboardingFeeCents: 200 }]);
+      expect(open).not.toHaveBeenCalled();
+      expect(nativeOpen).not.toHaveBeenCalled();
+    };
+    const expectBlocked = () => {
+      const pay = screen.getByRole("button", { name: "Loading onboarding fee…" }) as HTMLButtonElement;
+      expect(pay.disabled).toBe(true);
+      fireEvent.click(pay);
+      expect(screen.queryByRole("button", { name: "Pay $2.00 onboarding fee" })).toBeNull();
+      expectNoNewCheckout();
+    };
+    expectBlocked();
+    // Deliberately ignore abort in the transport: a cancelled read may still
+    // deliver bytes, but must not regain ownership of the query's displayed offer.
+    fees.mockImplementation(init => new Promise<Response>(resolve => {
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
+      pending.push({ signal: init!.signal!, resolve });
+    }));
+    const retry = screen.getByRole("button", { name: "Could not load fees. Tap to retry." });
+    await act(async () => { fireEvent.click(retry); });
+    await advance();
+    expect(pending).toHaveLength(1);
+    expectBlocked();
+    // All taps occur before React can re-render the retry control.
+    await act(async () => {
+      for (let tap = 0; tap < 4; tap++) fireEvent.click(retry);
+    });
+    await advance();
+    expect(pending).toHaveLength(5);
+    const obsolete = pending.slice(0, -1);
+    const latest = pending.at(-1)!;
+    expect(obsolete.every(read => read.signal.aborted)).toBe(true);
+    expect(latest.signal.aborted).toBe(false);
+    expectBlocked();
+    await advance(30_000);
+    expect(fees).toHaveBeenCalledTimes(7);
+    expect(status).toHaveBeenCalledTimes(2);
+    expectBlocked();
+
+    const settleObsolete = async () => {
+      // Reverse completion order, including a stale failure as well as prices
+      // different from both the initial and final offer.
+      for (const [index, read] of [...obsolete].reverse().entries()) {
+        await act(async () => {
+          read.resolve(index === 1
+            ? Response.json({ error: "Obsolete pricing failure" }, { status: 503 })
+            : Response.json({ applicationFeeCents: 100, onboardingFeeCents: 700 + index, currency: "usd" }));
+        });
+        await advance();
+      }
+    };
+    if (staleOrder === "before") {
+      await settleObsolete();
+      expectBlocked();
+    }
+    await act(async () => {
+      latest.resolve(Response.json({ applicationFeeCents: 100, onboardingFeeCents: 1234, currency: "usd" }));
+    });
+    await advance();
+    const expectFinalOffer = () => {
+      const pay = screen.getByRole("button", { name: "Pay $12.34 onboarding fee" }) as HTMLButtonElement;
+      expect(pay.disabled).toBe(false);
+      expect(screen.getByText(/Pay the one-time \$12\.34 onboarding fee/)).toBeTruthy();
+      expect(screen.queryByText("Could not load fees. Tap to retry.")).toBeNull();
+      expect(screen.queryByRole("button", { name: /Pay \$(2\.00|7\.\d\d) onboarding fee/ })).toBeNull();
+      expectNoNewCheckout();
+      return pay;
+    };
+    expectFinalOffer();
+    if (staleOrder === "after") await settleObsolete();
+    await advance(30_000);
+    const finalPay = expectFinalOffer();
+    expect(fees).toHaveBeenCalledTimes(7);
+    expect(status).toHaveBeenCalledTimes(2);
+
+    await act(async () => { fireEvent.click(finalPay); });
+    await advance();
+    expect(submissions).toEqual([{ expectedOnboardingFeeCents: 200 }, { expectedOnboardingFeeCents: 1234 }]);
+    expect(open).toHaveBeenCalledExactlyOnceWith("https://checkout.example.test/rapid-pricing-retry", "_blank", "noopener,noreferrer");
+    expect(nativeOpen).not.toHaveBeenCalled();
+    expect(screen.getByText("You're all set!")).toBeTruthy();
+    await advance(30_000);
+    expect(submissions).toHaveLength(2);
+    expect(open).toHaveBeenCalledOnce();
+  } finally {
+    cleanup();
+    client.clear();
+  }
+});
+
+it("deduplicates rapid pricing retry taps when no previous offer exists and waits for a payment click", async () => {
+  const submissions: unknown[] = [];
+  const open = vi.spyOn(window, "open").mockReturnValue({} as Window);
+  const nativeOpen = vi.mocked(WebBrowser.openAuthSessionAsync);
+  nativeOpen.mockReset();
+  let resolvePricing!: (response: Response) => void;
+  let signal!: AbortSignal;
+  const fees = vi.fn<(_init?: RequestInit) => Response | Promise<Response>>(() =>
+    Response.json({ error: "Pricing unavailable" }, { status: 503 }));
+  const status = vi.fn(() => Response.json({ id: "ba_synthetic", status: open.mock.calls.length ? "approved" : "accepted" }));
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = new URL(String(input)).pathname;
+    if (path === "/api/application-fees") return fees(init);
+    if (path === "/api/biz-accounts/ba_synthetic/status") return status();
+    expect(path).toBe("/api/biz-accounts/ba_synthetic/onboarding-checkout");
+    expect(init?.method).toBe("POST");
+    submissions.push(JSON.parse(init!.body as string));
+    return Response.json({ checkoutUrl: "https://checkout.example.test/first-pricing-retry" });
+  }));
+  const { client } = renderDashboard(<PaymentReturnScreen />);
+  try {
+    const retry = await screen.findByRole("button", { name: "Could not load fees. Tap to retry." });
+    await screen.findByText("You're accepted!");
+    vi.useFakeTimers();
+    fees.mockImplementation(init => new Promise<Response>(resolve => {
+      signal = init!.signal!;
+      resolvePricing = resolve;
+    }));
+    await act(async () => {
+      for (let tap = 0; tap < 5; tap++) fireEvent.click(retry);
+    });
+    await advance();
+    expect(fees).toHaveBeenCalledTimes(2);
+    expect(signal.aborted).toBe(false);
+    const loading = screen.getByRole("button", { name: "Loading onboarding fee…" }) as HTMLButtonElement;
+    expect(loading.disabled).toBe(true);
+    fireEvent.click(loading);
+    await advance(30_000);
+    expect(fees).toHaveBeenCalledTimes(2);
+    expect(submissions).toEqual([]);
+    expect(open).not.toHaveBeenCalled();
+    expect(nativeOpen).not.toHaveBeenCalled();
+
+    await act(async () => {
+      resolvePricing(Response.json({ applicationFeeCents: 100, onboardingFeeCents: 567, currency: "usd" }));
+    });
+    await advance(30_000);
+    const pay = screen.getByRole("button", { name: "Pay $5.67 onboarding fee" }) as HTMLButtonElement;
+    expect(pay.disabled).toBe(false);
+    expect(screen.getByText(/Pay the one-time \$5\.67 onboarding fee/)).toBeTruthy();
+    expect(submissions).toEqual([]);
+    expect(open).not.toHaveBeenCalled();
+    expect(nativeOpen).not.toHaveBeenCalled();
+    expect(fees).toHaveBeenCalledTimes(2);
+    expect(status).toHaveBeenCalledOnce();
+    await act(async () => { fireEvent.click(pay); });
+    await advance();
+    expect(submissions).toEqual([{ expectedOnboardingFeeCents: 567 }]);
+    expect(open).toHaveBeenCalledExactlyOnceWith("https://checkout.example.test/first-pricing-retry", "_blank", "noopener,noreferrer");
+    expect(nativeOpen).not.toHaveBeenCalled();
+    expect(screen.getByText("You're all set!")).toBeTruthy();
+    await advance(30_000);
+    expect(submissions).toHaveLength(1);
+    expect(open).toHaveBeenCalledOnce();
+  } finally {
+    cleanup();
+    client.clear();
+  }
+});
+
+it.each(["web", "ios", "android"] as const)("uses the recovered currency on %s without rewriting receipts or automatically starting checkout", async platform => {
+  Platform.OS = platform;
+  vi.useFakeTimers();
+  const open = vi.spyOn(window, "open").mockReturnValue({} as Window);
+  const nativeOpen = vi.mocked(WebBrowser.openAuthSessionAsync);
+  nativeOpen.mockReset();
+  nativeOpen.mockResolvedValue({ type: "success", url: "https://app.example.test/payment-return" });
+  let approved = false;
+  let resolvePricing!: (response: Response) => void;
+  const submissions: unknown[] = [];
+  const fees = vi.fn<() => Response | Promise<Response>>()
+    .mockImplementationOnce(() => Response.json({ applicationFeeCents: 100, onboardingFeeCents: 200, currency: "usd" }))
+    .mockImplementationOnce(() => Response.json({ error: "Pricing unavailable" }, { status: 503 }))
+    .mockImplementation(() => new Promise<Response>(resolve => { resolvePricing = resolve; }));
+  const status = vi.fn(() => Response.json({
+    id: "ba_synthetic", status: approved ? "approved" : "accepted",
+    paidAt: "2026-08-01T00:00:00Z",
+    applicationPayment: { amountCents: 1900, currency: "usd" },
+    // Synthetic historical receipt: never derive its amount/currency from today's offer.
+    onboardingPayment: approved ? { amountCents: 7900, currency: "usd" } : null,
+  }));
+  const unexpectedRequests: string[] = [];
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url === "https://api.example.test/api/biz-accounts/ba_synthetic/onboarding-checkout") {
+      expect(init?.method).toBe("POST");
+      submissions.push(JSON.parse(init!.body as string));
+      if (submissions.length === 1) return Response.json({ error: "Fee changed" }, { status: 409 });
+      approved = true;
+      return Response.json({ checkoutUrl: "https://checkout.example.test/currency-recovery" });
+    }
+    expect(init?.method ?? "GET").toBe("GET");
+    if (url === "https://api.example.test/api/application-fees") return fees();
+    if (url === "https://api.example.test/api/biz-accounts/ba_synthetic/status") return status();
+    unexpectedRequests.push(url);
+    throw new Error(`Unexpected test request: ${url}`);
+  }));
+  const { client } = renderDashboard(<PaymentReturnScreen />);
+  try {
+    await advance();
+    const pay = screen.getByRole("button", { name: "Pay $2.00 onboarding fee" });
+    expect(screen.getByText(/Pay the one-time \$2\.00 onboarding fee/)).toBeTruthy();
+    expect(screen.getByText("Application fee paid: $19.00")).toBeTruthy();
+    expect(submissions).toEqual([]);
+    expect(open).not.toHaveBeenCalled();
+    expect(nativeOpen).not.toHaveBeenCalled();
+
+    await act(async () => { fireEvent.click(pay); });
+    await advance();
+    const expectNoNewCheckout = () => {
+      expect(submissions).toEqual([{ expectedOnboardingFeeCents: 200 }]);
+      expect(open).not.toHaveBeenCalled();
+      expect(nativeOpen).not.toHaveBeenCalled();
+      expect(unexpectedRequests).toEqual([]);
+      expect(screen.getByText("Application fee paid: $19.00")).toBeTruthy();
+      expect(screen.queryByText("Application fee paid: €19.00")).toBeNull();
+    };
+    expect(fees).toHaveBeenCalledTimes(2);
+    expect(status).toHaveBeenCalledTimes(2);
+    expect(screen.getByText(/Review the updated details before paying/)).toBeTruthy();
+    expect(screen.getByText("Could not load fees. Tap to retry.")).toBeTruthy();
+    const disabled = screen.getByRole("button", { name: "Loading onboarding fee…" }) as HTMLButtonElement;
+    expect(disabled.disabled).toBe(true);
+    fireEvent.click(disabled);
+    await advance(30_000);
+    expect(fees).toHaveBeenCalledTimes(2);
+    expectNoNewCheckout();
+
+    // Hold the explicit retry open: neither waiting nor disabled payment clicks
+    // may submit the old USD offer.
+    await act(async () => { fireEvent.click(screen.getByText("Could not load fees. Tap to retry.")); });
+    await advance();
+    expect(fees).toHaveBeenCalledTimes(3);
+    expect((screen.getByRole("button", { name: "Loading onboarding fee…" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Loading onboarding fee…" }));
+    await advance(30_000);
+    expectNoNewCheckout();
+
+    await act(async () => {
+      resolvePricing(Response.json({ applicationFeeCents: 150, onboardingFeeCents: 350, currency: "eur" }));
+    });
+    await advance();
+    const refreshedPay = screen.getByRole("button", { name: "Pay €3.50 onboarding fee" }) as HTMLButtonElement;
+    expect(refreshedPay.disabled).toBe(false);
+    expect(screen.getByText(/Pay the one-time €3\.50 onboarding fee/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Pay $2.00 onboarding fee" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Pay $3.50 onboarding fee" })).toBeNull();
+    expect(screen.queryByText(/one-time \$2\.00|one-time \$3\.50/)).toBeNull();
+    expect(screen.queryByText("Could not load fees. Tap to retry.")).toBeNull();
+    await advance(30_000);
+    expect(fees).toHaveBeenCalledTimes(3);
+    expect(status).toHaveBeenCalledTimes(2);
+    expectNoNewCheckout();
+
+    await act(async () => { fireEvent.click(refreshedPay); });
+    await advance();
+    expect(submissions).toEqual([{ expectedOnboardingFeeCents: 200 }, { expectedOnboardingFeeCents: 350 }]);
+    if (platform === "web") {
+      expect(open).toHaveBeenCalledExactlyOnceWith("https://checkout.example.test/currency-recovery", "_blank", "noopener,noreferrer");
+      expect(nativeOpen).not.toHaveBeenCalled();
+    } else {
+      expect(nativeOpen).toHaveBeenCalledExactlyOnceWith("https://checkout.example.test/currency-recovery", null);
+      expect(open).not.toHaveBeenCalled();
+    }
+    expect(screen.getByText("You're all set!")).toBeTruthy();
+    expect(screen.getByText("Application fee paid: $19.00")).toBeTruthy();
+    expect(screen.getByText("Onboarding fee paid: $79.00")).toBeTruthy();
+    expect(screen.queryByText("Application fee paid: €19.00")).toBeNull();
+    expect(screen.queryByText("Onboarding fee paid: €79.00")).toBeNull();
+    expect(screen.queryByText("Onboarding fee paid: €3.50")).toBeNull();
+    await advance(30_000);
+    expect(submissions).toHaveLength(2);
+    expect(unexpectedRequests).toEqual([]);
+  } finally {
+    cleanup();
+    client.clear();
+  }
+});
+
 it.each([true, false])("shows only the historical recorded amount, if known (%s)", async known => {
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
     if (String(input).endsWith("/api/application-fees")) {

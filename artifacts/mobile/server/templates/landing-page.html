@@ -28,6 +28,7 @@
         font-weight: 600;
         margin: 0;
         color: #111;
+        overflow-wrap: anywhere;
       }
       .subtitle {
         font-size: 15px;
@@ -185,6 +186,11 @@
       .qr-code canvas {
         width: 100%;
         height: 100%;
+      }
+      /* Fallback instructions must grow with enlarged text, unlike the QR. */
+      .qr-code[role="status"] {
+        height: auto;
+        overflow-wrap: anywhere;
       }
       .open-button {
         display: inline-block;

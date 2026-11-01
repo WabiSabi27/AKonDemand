@@ -1,0 +1,88 @@
+name: Payment recovery regression
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: payment-recovery-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  payment-recovery:
+    name: Payment recovery (PostgreSQL)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: recovery_ci
+          # Disposable runner-only service, never an application database.
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 127.0.0.1:5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d recovery_ci"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      CI: 'true'
+      NODE_ENV: test
+      DATABASE_URL: postgresql://postgres@127.0.0.1:5432/recovery_ci
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.26.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+      - name: Install locked API dependencies
+        run: pnpm --filter workspace --filter @workspace/api-server... install --frozen-lockfile
+      - name: Build shared type declarations
+        run: pnpm exec tsc --build lib/db/tsconfig.json lib/api-zod/tsconfig.json
+      - name: Check API types
+        run: pnpm --filter @workspace/api-server run typecheck
+      - name: Generate an ephemeral test signing key
+        run: |
+          node --input-type=module <<'NODE'
+          import { randomBytes } from 'node:crypto';
+          import { appendFileSync } from 'node:fs';
+          const key = randomBytes(32).toString('hex');
+          console.log(`::add-mask::${key}`);
+          appendFileSync(process.env.GITHUB_ENV, `SESSION_SECRET=${key}\n`);
+          NODE
+      - name: Initialize only the disposable CI database
+        run: |
+          node -e "if (process.env.DATABASE_URL !== 'postgresql://postgres@127.0.0.1:5432/recovery_ci') throw new Error('Refusing schema initialization outside the disposable CI database')"
+          pnpm --filter @workspace/db run push
+      - name: Insert the synthetic category fixture
+        working-directory: lib/db
+        run: |
+          node --input-type=module <<'NODE'
+          import pg from 'pg';
+          const client = new pg.Client({ connectionString: process.env.DATABASE_URL });
+          await client.connect();
+          try {
+            await client.query(
+              'INSERT INTO categories (id, name, icon, color) VALUES ($1, $2, $3, $4)',
+              ['handyman', 'Synthetic CI category', 'tools', '#123456'],
+            );
+          } finally {
+            await client.end();
+          }
+          NODE
+      # Loaded Stripe/email boundaries remain stubbed by the recovery tests.
+      # Never start the API workflow, application seeding or payment services.
+      - name: Run recovery and crash-claim regression tests
+        run: pnpm --filter @workspace/api-server exec vitest run tests/deadLetter.test.ts tests/deadLetterClaim.test.ts

@@ -14,6 +14,7 @@
     "test:server": "node --test server/*.test.cjs",
     "test:browser:payment-return": "pnpm run build-web && playwright test --config playwright.payment-return.config.cjs",
     "test:browser:landing-page": "playwright test --config playwright.landing-page.config.cjs",
+    "test:browser:api-origin": "playwright test --config playwright.api-origin.config.cjs",
     "check:published-payment-return": "node scripts/check-published-payment-return.cjs",
     "monitor:published-payment-return": "node scripts/run-published-payment-monitor.cjs",
     "test:watch": "vitest"

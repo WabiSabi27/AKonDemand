@@ -30,6 +30,7 @@ import {
   emailOutboxTable,
 } from "@workspace/db";
 import { requireRole } from "../middlewares/auth";
+import { getWebhookReadiness } from "../lib/stripeWebhookReadiness";
 import { PLAN_PRICE_CENTS, PLAN_TIERS, parsePlanTier, type PlanTier } from "../lib/plans";
 
 const router: IRouter = Router();
@@ -243,6 +244,7 @@ router.get("/admin/metrics", requireRole("admin"), async (_req, res) => {
     churn,
     topCategories,
     emailOutbox: { failedCount: failedEmailCount },
+    paymentWebhook: getWebhookReadiness(),
   });
 });
 

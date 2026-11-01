@@ -1,0 +1,49 @@
+name: Payment return recovery regression
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: payment-return-recovery-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  payment-return-recovery:
+    name: Payment return recovery
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      CI: 'true'
+      EXPO_NO_TELEMETRY: '1'
+      DATABASE_URL: ''
+      SESSION_SECRET: ''
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.26.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+      - name: Install locked mobile dependencies
+        run: pnpm --filter workspace --filter @workspace/mobile... install --frozen-lockfile
+      - name: Build shared client type declarations
+        run: pnpm exec tsc --build lib/api-client-react/tsconfig.json
+      - name: Check mobile types
+        run: pnpm --filter @workspace/mobile run typecheck
+      # Use the actual screens/generated client with fixture HTTP, storage and
+      # browser boundaries. Never launch real checkout or require payment keys.
+      - name: Run payment return, lifecycle and fee regression tests
+        run: >-
+          pnpm --filter @workspace/mobile exec vitest run
+          tests/paymentReturn.test.tsx tests/paymentReturnLifecycle.test.tsx
+          tests/applicationFees.test.tsx

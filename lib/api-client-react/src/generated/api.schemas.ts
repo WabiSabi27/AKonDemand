@@ -179,6 +179,33 @@ export interface AdminEmailOutboxResponse {
   entries: AdminEmailOutboxEntry[];
 }
 
+export type AdminWebhookReadinessStatus =
+  (typeof AdminWebhookReadinessStatus)[keyof typeof AdminWebhookReadinessStatus];
+
+export const AdminWebhookReadinessStatus = {
+  checking: "checking",
+  ready: "ready",
+  unavailable: "unavailable",
+} as const;
+
+export type AdminWebhookReadinessEnvironment =
+  (typeof AdminWebhookReadinessEnvironment)[keyof typeof AdminWebhookReadinessEnvironment];
+
+export const AdminWebhookReadinessEnvironment = {
+  preview: "preview",
+  production: "production",
+} as const;
+
+/**
+ * Read-only startup verification; API health does not imply callback availability.
+ */
+export interface AdminWebhookReadiness {
+  status: AdminWebhookReadinessStatus;
+  environment: AdminWebhookReadinessEnvironment;
+  /** Fixed safe explanation; never contains credentials or callback identifiers. */
+  reason: string;
+}
+
 export type AdminMetricsGmv = {
   lifetimeCents: number;
   last30Cents: number;
@@ -232,6 +259,7 @@ export interface AdminMetrics {
   topCategories: AdminMetricsTopCategoriesItem[];
   /** Task */
   emailOutbox: AdminMetricsEmailOutbox;
+  paymentWebhook: AdminWebhookReadiness;
 }
 
 export interface SetMyExternalCalendarRequest {
