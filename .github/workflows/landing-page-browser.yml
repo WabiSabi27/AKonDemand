@@ -40,6 +40,9 @@ jobs:
           cache: pnpm
       - name: Install locked mobile dependencies
         run: pnpm --filter @workspace/mobile... install --frozen-lockfile
+      - name: Check browser-availability policy
+        if: matrix.browser == 'chromium'
+        run: pnpm --filter @workspace/mobile exec node --test server/landing-page-browser-availability.test.cjs
       - name: Install browser and Linux dependencies
         run: pnpm --filter @workspace/mobile exec playwright install --with-deps ${{ matrix.browser }}
       - name: Check isolated download instructions

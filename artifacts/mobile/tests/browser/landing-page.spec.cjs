@@ -55,6 +55,13 @@ const layouts = [
   { name: 'desktop breakpoint', width: 768, height: 900, mobile: false },
   { name: 'wide desktop', width: 1440, height: 900, mobile: false },
 ];
+// Text-only enlargement keeps the CSS viewport unchanged. Cover both store
+// preferences at the narrowest width, plus the two-column breakpoint.
+const enlargedTextLayouts = [
+  { ...layouts[0], name: 'narrow iPhone, 200% text', textScale: 2 },
+  { ...layouts[1], name: 'narrow Android, 200% text', width: 320, textScale: 2 },
+  { ...layouts[2], name: 'desktop breakpoint, 200% text', textScale: 2 },
+];
 const links = [
   ['#app-store-btn', 'https://apps.apple.com/app/id982107779'],
   ['#play-store-btn', 'https://play.google.com/store/apps/details?id=host.exp.exponent'],
@@ -98,6 +105,22 @@ async function expectReachable(page, selector, { interactive = false } = {}) {
       x: rect.x, right: rect.right, width: rect.width, height: rect.height,
       cardLeft: card.left, cardRight: card.right,
       overflowing: el.scrollWidth > el.clientWidth + 1,
+      overflowingVertically: el.scrollHeight > el.clientHeight + 1,
+      // Scroll dimensions alone miss text painted outside a flex item or
+      // clipped with overflow:hidden. Check the rendered text itself too.
+      textContained: (() => {
+        const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+        while (walker.nextNode()) {
+          if (!walker.currentNode.textContent.trim()) continue;
+          const range = document.createRange();
+          range.selectNodeContents(walker.currentNode);
+          for (const text of range.getClientRects()) {
+            if (text.left < rect.left - 1 || text.right > rect.right + 1 ||
+                text.top < rect.top - 1 || text.bottom > rect.bottom + 1) return false;
+          }
+        }
+        return true;
+      })(),
     };
   });
   expect(geometry.x).toBeGreaterThanOrEqual(0);
@@ -105,6 +128,8 @@ async function expectReachable(page, selector, { interactive = false } = {}) {
   expect(geometry.x).toBeGreaterThanOrEqual(geometry.cardLeft);
   expect(geometry.right).toBeLessThanOrEqual(geometry.cardRight);
   expect(geometry.overflowing).toBe(false);
+  expect(geometry.overflowingVertically).toBe(false);
+  expect(geometry.textContained).toBe(true);
   if (interactive) {
     expect(geometry.width).toBeGreaterThanOrEqual(24);
     expect(geometry.height).toBeGreaterThanOrEqual(24);
@@ -113,7 +138,7 @@ async function expectReachable(page, selector, { interactive = false } = {}) {
   }
 }
 
-for (const layout of layouts) {
+for (const layout of [...layouts, ...enlargedTextLayouts]) {
   for (const colorScheme of ['light', 'dark']) {
     for (const qr of ['available', 'unavailable']) {
       test(`${layout.name}, ${colorScheme}, QR ${qr}`, async ({ page, context, browserName }, testInfo) => {
@@ -165,6 +190,26 @@ for (const layout of layouts) {
         }
         await expect(page.locator('#loading')).toBeHidden();
         await expect(page.locator('#content')).toBeVisible();
+        if (layout.textScale) {
+          // Do not use CSS zoom, a transform, or only html font-size (the
+          // template uses px). Snapshot every computed size before writing,
+          // so inherited text is enlarged exactly once and layout is untouched.
+          const sizes = await page.locator('body').evaluate((body, scale) => {
+            const elements = [body, ...body.querySelectorAll('*')];
+            const sizes = elements.map(el => parseFloat(getComputedStyle(el).fontSize));
+            elements.forEach((el, index) => {
+              el.style.fontSize = `${sizes[index] * scale}px`;
+            });
+            return elements.filter(el => el.matches('#qr-code, a'))
+              .map(el => sizes[elements.indexOf(el)]);
+          }, layout.textScale);
+          // Store buttons transition "all"; wait for computed text sizes to
+          // settle rather than measuring an intermediate animation frame.
+          expect(sizes).toHaveLength(4);
+          await expect.poll(() => page.locator('#qr-code, a').evaluateAll(elements =>
+            elements.map(el => parseFloat(getComputedStyle(el).fontSize)),
+          )).toEqual(sizes.map(size => size * layout.textScale));
+        }
         await expect(page.getByRole('heading', { name: 'Download Expo Go' })).toBeVisible();
         await expect(page.getByRole('heading', { name: 'Scan QR Code' })).toBeVisible();
         expect(await page.evaluate(() => window.__openingAttempts))
@@ -208,6 +253,11 @@ for (const layout of layouts) {
           await expect(page.locator('#qr-code')).toHaveText(
             'QR code unavailable. Use Open in Expo Go on your phone.',
           );
+          const separated = await page.locator('#qr-code').evaluate(el =>
+            el.getBoundingClientRect().bottom <=
+              document.querySelector('.open-button').getBoundingClientRect().top,
+          );
+          expect(separated).toBe(true);
         }
         expect(await page.evaluate(() => ({
           document: document.documentElement.scrollWidth > innerWidth,

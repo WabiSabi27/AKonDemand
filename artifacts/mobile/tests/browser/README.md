@@ -91,6 +91,14 @@ are local stubs; link activation and Expo navigation are intercepted. Unexpected
 network requests are blocked and fail the test. No server, real store, CDN, or
 external protocol handler is needed.
 
+Focused 200% text-only cases keep the viewport at 320px for both iPhone and
+Android store preferences, and at the 768px two-column breakpoint. They double
+computed font sizes (including the template's explicit pixel sizes), not page
+zoom or box dimensions, in both color modes and QR states. Checks include text
+and vertical containment, separation of the fallback message from the open
+button, scrolling to each link, and pointer/keyboard activation under the same
+fail-closed stubs.
+
 Chromium is required. An absent bundled Firefox/WebKit executable or Playwright's
 specific missing-host-dependencies diagnostic produces explicit skips, not
 successful browser coverage. Other launch errors and all test failures fail
@@ -103,6 +111,16 @@ overrides must be compatible with the installed Playwright version and never
 skip when invalid. Stock Firefox is not a substitute for Playwright's patched
 Firefox runtime.
 
+The availability/skip policy also has browser-free regression coverage:
+
+```sh
+pnpm --filter @workspace/mobile exec node --test server/landing-page-browser-availability.test.cjs
+```
+
+These tests execute the actual spec's registered hook with isolated browser
+doubles, including failure propagation and probe cleanup. They also run with
+`test:server` (and `test`); they do not establish real cross-engine coverage.
+
 Screenshots and failure traces go under the ignored
 `generated-artifacts/landing-page-browser/` directory, separated by project.
 
@@ -111,6 +129,8 @@ Screenshots and failure traces go under the ignored
 `.github/workflows/landing-page-browser.yml` runs on pull requests, pushes to
 `main`/`master`, and manual dispatch. It uses Ubuntu 24.04 with a separate job for
 each engine and installs that engine with `playwright install --with-deps`.
+The Chromium job also runs the browser-free availability-policy tests once,
+before installing its browser. This does not replace the three real-engine runs.
 Every job sets `LANDING_PAGE_REQUIRE_ALL_BROWSERS=1` and invokes the documented
 command with its project selected:
 
