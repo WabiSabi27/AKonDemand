@@ -44,6 +44,13 @@ function fixture(t, basePath = "/") {
     extract: () => extractAssets(timestamp, options),
     copy: (assets) => downloadAssets(assets, timestamp, options),
     rewrite: () => updateBundleUrls(timestamp, baseUrl, options),
+    manifests: () => updateManifests(Object.fromEntries(platforms.map((platform) => [platform, {
+      launchAsset: {}, assets: [],
+      extra: { expoClient: {}, expoGo: { packagerOpts: {} } },
+    }])), timestamp, baseUrl, new Map(), options),
+    check: () => checkNativeBuild({
+      staticRoot: path.join(projectRoot, "static-build"), baseUrl, basePath,
+    }),
   };
 }
 
@@ -124,17 +131,16 @@ for (const basePath of ["/", "/mobile/"]) {
       extra: { expoClient: {}, expoGo: { packagerOpts: {} } },
     }]));
     updateManifests(manifests, timestamp, baseUrl, new Map(), tree.options);
-    // The old manifest-only check passes with just two bundles: the assertions
-    // below independently verify every additional bundle-registered variant.
+    // Count both launch bundles and every unique bundle-registered scale.
     assert.deepEqual(checkNativeBuild({
       staticRoot: path.join(tree.projectRoot, "static-build"), baseUrl, basePath,
-    }), { checkedFiles: 2 });
+    }), { checkedFiles: 2 + expected.length });
 
     const origin = await serveFixture(t, tree);
     const prefix = basePath.replace(/\/+$/, "");
     for (const { platform, directory, filename, bytes } of expected) {
       const rewritten = fs.readFileSync(tree.bundlePath(platform), "utf8");
-      const location = `${baseUrl}${prefix}/${timestamp}/_expo/static/js/${platform}/${directory}`;
+      const location = `${baseUrl}${prefix}/${timestamp}/_expo/static/js/${`${platform}/${directory}`.split("/").map(encodeURIComponent).join("/")}`;
       assert.ok(rewritten.includes(`httpServerLocation:"${location}"`));
       assert.ok(!rewritten.includes("unstable_path"));
       assert.ok(rewritten.includes('httpServerLocation:"https://cdn.example.test/images"'));
@@ -147,6 +153,49 @@ for (const basePath of ["/", "/mobile/"]) {
     const old = await fetch(`${origin}${prefix}/older-build/_expo/static/js/ios/assets/images/logo.png`);
     assert.equal(old.status, 404);
   });
+}
+
+for (const basePath of ["/", "/mobile/"]) {
+  for (const platform of platforms) {
+    for (const type of ["png", "ttf"]) {
+      for (const mode of ["missing", "empty", "directory"]) {
+        test(`${mode} copied ${platform} bundle-only ${type} fails at ${basePath}`, async (t) => {
+          const tree = fixture(t, basePath);
+          const scales = type === "png" ? [1, 1.5, 2, 3] : [1];
+          for (const current of platforms) {
+            tree.bundle(current, registration("assets/local", "only", type, scales));
+          }
+          for (const scale of scales) {
+            tree.source(`assets/local/only${scale === 1 ? "" : `@${scale}x`}.${type}`, `scale ${scale}`);
+          }
+          await tree.copy(tree.extract());
+          tree.rewrite();
+          tree.manifests();
+          assert.deepEqual(tree.check(), { checkedFiles: 2 + 2 * scales.length });
+
+          const filename = `only${type === "png" ? "@1.5x" : ""}.${type}`;
+          const relative = `_expo/static/js/${platform}/assets/local/${filename}`;
+          const target = path.join(tree.projectRoot, "static-build", timestamp, relative);
+          // A stale timestamp, source file and other platform's intact copy
+          // must not conceal a missing file in the served timestamped output.
+          tree.write(path.join(tree.projectRoot, "static-build/old", relative), "stale bytes");
+          fs.unlinkSync(target);
+          if (mode === "empty") fs.writeFileSync(target, "");
+          if (mode === "directory") fs.mkdirSync(target);
+          const network = t.mock.method(globalThis, "fetch", () => {
+            throw new Error("completeness gate must not contact any service");
+          });
+          assert.throws(tree.check, (error) => {
+            assert.match(error.message, /Native build is incomplete/);
+            assert.ok(error.message.includes(`${platform} bundle assets[0] only.${type} scale ${type === "png" ? 1.5 : 1}`));
+            assert.ok(error.message.includes(target));
+            return true;
+          });
+          assert.equal(network.mock.callCount(), 0);
+        });
+      }
+    }
+  }
 }
 
 test("platform manifests use their own hash mapping, including equal cross-platform hashes", async (t) => {
@@ -182,6 +231,7 @@ test("a manifest uses the lowest registered scale when no unscaled file exists",
   const assets = tree.extract();
   assert.ok(assets.every((asset) => asset.filename === "retina@2x.png"));
   await tree.copy(assets);
+  tree.rewrite();
   const byHash = new Map(assets.map((asset) => [
     `${[...asset.platforms][0]}:${asset.hash}`, asset,
   ]));
@@ -192,7 +242,7 @@ test("a manifest uses the lowest registered scale when no unscaled file exists",
   updateManifests(manifests, timestamp, baseUrl, byHash, tree.options);
   assert.deepEqual(checkNativeBuild({
     staticRoot: path.join(tree.projectRoot, "static-build"), baseUrl,
-  }), { checkedFiles: 4 });
+  }), { checkedFiles: 8 });
 });
 
 for (const platform of platforms) {
@@ -244,6 +294,8 @@ test("asset-free bundles need no files and keep their contents on rewrite", asyn
   for (const platform of platforms) {
     assert.equal(fs.readFileSync(tree.bundlePath(platform), "utf8"), "// fixture bundle\n");
   }
+  tree.manifests();
+  assert.deepEqual(tree.check(), { checkedFiles: 2 });
 });
 
 test("extraction never evaluates bundle code or starts Metro/network work", (t) => {
@@ -258,4 +310,37 @@ test("extraction never evaluates bundle code or starts Metro/network work", (t) 
   assert.equal(tree.extract().length, 1);
   assert.equal(spawn.mock.callCount(), 0);
   assert.equal(fetch.mock.callCount(), 0);
+});
+
+test("the completeness gate reads persisted bundles without evaluating code or fetching remote assets", async (t) => {
+  const tree = fixture(t, "/mobile/");
+  tree.bundle("ios", `throw new Error("bundle must not run");\n${registration("assets", "icon", "png")}`);
+  tree.source("assets/icon.png", "image bytes");
+  await tree.copy(tree.extract());
+  tree.rewrite();
+  tree.manifests();
+  fs.appendFileSync(tree.bundlePath("ios"), '\n' + registration("assets", "remote", "ttf")
+    .replace(/\/assets\/\?unstable_path=[^"]+/, "https://cdn.example.test/fonts"));
+  const network = t.mock.method(globalThis, "fetch", () => {
+    throw new Error("must not contact any service");
+  });
+  assert.deepEqual(tree.check(), { checkedFiles: 3 });
+  assert.equal(network.mock.callCount(), 0);
+});
+
+for (const scales of ["[]", "[0]", '["2"]', "[1,null]"]) {
+  test(`invalid persisted scales ${scales} fail explicitly`, (t) => {
+    const tree = fixture(t);
+    tree.bundle("ios", registration("assets", "icon", "png").replace("scales:[1]", `scales:${scales}`));
+    tree.rewrite();
+    tree.manifests();
+    assert.throws(tree.check, /ios bundle assets\[0\]: invalid registration: invalid scales/);
+  });
+}
+
+test("a persisted bundle retaining a Metro asset URL fails even with no manifest assets", (t) => {
+  const tree = fixture(t);
+  tree.bundle("android", registration("assets", "icon", "png"));
+  tree.manifests();
+  assert.throws(tree.check, /android bundle assets\[0\].*development-server URL remains/);
 });
