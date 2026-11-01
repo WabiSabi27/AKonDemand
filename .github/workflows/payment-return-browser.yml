@@ -28,6 +28,10 @@ jobs:
       REPLIT_INTERNAL_APP_DOMAIN: payment-return.invalid
       BASE_PATH: /
     steps:
+      - name: Intentional merge-protection negative control
+        run: |
+          echo "Intentional failure to verify the required payment-link check blocks merging. Do not merge this PR."
+          exit 1
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
