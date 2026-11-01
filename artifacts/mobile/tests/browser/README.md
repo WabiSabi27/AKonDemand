@@ -69,3 +69,35 @@ merge only checked commits and wait for the main-branch check before publishing.
 The separate opt-in `payment-return-monitor.yml` remains unchanged: it checks
 published HTTP routing, not execution of the Expo app, and is not a substitute
 for this isolated browser regression check.
+
+### Supported CI run
+
+`.github/workflows/landing-page-browser.yml` runs on pull requests, pushes to
+`main`/`master`, and manual dispatch. It uses Ubuntu 24.04 with a separate job for
+each engine and installs that engine with `playwright install --with-deps`.
+Every job sets `LANDING_PAGE_REQUIRE_ALL_BROWSERS=1` and invokes the documented
+command with its project selected:
+
+```sh
+LANDING_PAGE_REQUIRE_ALL_BROWSERS=1 pnpm --filter @workspace/mobile run test:browser:landing-page --project=firefox
+```
+
+Missing engines or host libraries fail CI rather than skipping. An engine
+failure does not cancel the other jobs. Available screenshots and retained
+failure traces are uploaded as `landing-page-browser-chromium`,
+`landing-page-browser-firefox`, and `landing-page-browser-webkit` for 14 days,
+including when the suite fails. Launch failures before a page exists may have
+no screenshot or trace; inspect the job log in that case.
+
+This workflow uses the existing isolated QR fixtures, intercepted store/Expo
+navigation, and fail-closed network routing. It needs no application server,
+Expo export, live API, payment credentials, or deployment access. The separate
+payment-return workflow is unchanged.
+
+Before merging, confirm all three **Download instructions (chromium)**,
+**Download instructions (firefox)**, and **Download instructions (webkit)**
+checks passed for the exact commit under review, without skipped cases. A local
+run that skips Firefox/WebKit is not equivalent. Repository administrators can
+require these three checks in branch protection or a ruleset; adding this file
+alone does not configure that policy. A prepared workflow is not evidence of a
+successful CI run.

@@ -1,0 +1,54 @@
+name: Download-instructions browser regression
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: landing-page-browser-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  landing-page-browser:
+    name: Download instructions (${{ matrix.browser }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      # A failure in one engine must not cancel the other engines' evidence.
+      fail-fast: false
+      matrix:
+        browser: [chromium, firefox, webkit]
+    env:
+      CI: 'true'
+      EXPO_NO_TELEMETRY: '1'
+      LANDING_PAGE_REQUIRE_ALL_BROWSERS: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.26.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+      - name: Install locked mobile dependencies
+        run: pnpm --filter @workspace/mobile... install --frozen-lockfile
+      - name: Install browser and Linux dependencies
+        run: pnpm --filter @workspace/mobile exec playwright install --with-deps ${{ matrix.browser }}
+      - name: Check isolated download instructions
+        run: pnpm --filter @workspace/mobile run test:browser:landing-page --project=${{ matrix.browser }}
+      - name: Retain engine screenshots and failure traces
+        if: ${{ always() && !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: landing-page-browser-${{ matrix.browser }}
+          path: generated-artifacts/landing-page-browser/
+          if-no-files-found: ignore
+          retention-days: 14
