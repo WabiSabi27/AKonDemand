@@ -11,6 +11,7 @@ import type { AdminMetricsFunnel } from "./adminMetricsFunnel";
 import type { AdminMetricsGmv } from "./adminMetricsGmv";
 import type { AdminMetricsSubscriptions } from "./adminMetricsSubscriptions";
 import type { AdminMetricsTopCategoriesItem } from "./adminMetricsTopCategoriesItem";
+import type { AdminWebhookReadiness } from "./adminWebhookReadiness";
 
 export interface AdminMetrics {
   gmv: AdminMetricsGmv;
@@ -20,4 +21,5 @@ export interface AdminMetrics {
   topCategories: AdminMetricsTopCategoriesItem[];
   /** Task */
   emailOutbox: AdminMetricsEmailOutbox;
+  paymentWebhook: AdminWebhookReadiness;
 }

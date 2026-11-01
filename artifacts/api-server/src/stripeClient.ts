@@ -4,6 +4,7 @@ import { logger } from './lib/logger';
 import { runStartupStep } from './lib/startup';
 import { getProductionTestCredentials } from './lib/stripeTestCredentials';
 import { configureStripeWebhook } from './lib/stripeWebhookLifecycle';
+import { trackWebhookRegistration } from './lib/stripeWebhookReadiness';
 
 // Development's connector points to the original sandbox account.
 // A production-labeled connection exists for a DIFFERENT account: selecting
@@ -106,14 +107,14 @@ export async function getStripeSecretKey() {
 }
 
 export async function configureCurrentStripeWebhook(url: string) {
-  return configureStripeWebhook({
+  return trackWebhookRegistration(async () => configureStripeWebhook({
     stripe: await getUncachableStripeClient(),
     store: await getStripeSync(),
     url,
     production: process.env.NODE_ENV === 'production',
     allowPreviewCreation: process.env.NODE_ENV === 'development' &&
       process.env.STRIPE_PREVIEW_WEBHOOK_CREATE === 'true',
-  });
+  }));
 }
 
 // `stripe-replit-sync` ships no type declarations; keeping the `any`-typed
