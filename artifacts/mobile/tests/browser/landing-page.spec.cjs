@@ -100,7 +100,7 @@ async function expectReachable(page, selector, { interactive = false } = {}) {
   await expect(element).toBeInViewport({ ratio: 1 });
   const geometry = await element.evaluate(el => {
     const rect = el.getBoundingClientRect();
-    const card = el.closest('.step').getBoundingClientRect();
+    const card = (el.closest('.step') || el.closest('.wrapper')).getBoundingClientRect();
     return {
       x: rect.x, right: rect.right, width: rect.width, height: rect.height,
       cardLeft: card.left, cardRight: card.right,
@@ -210,6 +210,7 @@ for (const layout of [...layouts, ...enlargedTextLayouts]) {
             elements.map(el => parseFloat(getComputedStyle(el).fontSize)),
           )).toEqual(sizes.map(size => size * layout.textScale));
         }
+        await expectReachable(page, 'h1');
         await expect(page.getByRole('heading', { name: 'Download Expo Go' })).toBeVisible();
         await expect(page.getByRole('heading', { name: 'Scan QR Code' })).toBeVisible();
         expect(await page.evaluate(() => window.__openingAttempts))
