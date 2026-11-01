@@ -4,6 +4,7 @@ import { logger } from './lib/logger';
 import { runStartupStep } from './lib/startup';
 import { getProductionTestCredentials } from './lib/stripeTestCredentials';
 import { configureStripeWebhook } from './lib/stripeWebhookLifecycle';
+import { onboardingCheckoutHttpClient } from './lib/onboardingCheckoutTransport';
 
 // Development's connector points to the original sandbox account.
 // A production-labeled connection exists for a DIFFERENT account: selecting
@@ -85,13 +86,19 @@ async function getCredentials() {
   return { publishableKey, secretKey };
 }
 
-export async function getUncachableStripeClient() {
+export async function getUncachableStripeClient(
+  options: { disableConnectionRetries?: boolean } = {},
+) {
   const { secretKey } = await getCredentials();
   return new Stripe(secretKey, {
     // Pinned API version. Cast retained because the SDK's `LatestApiVersion`
     // literal type tracks the package's bundled version, which may not always
     // match this exact pin during SDK upgrades.
     apiVersion: '2025-08-27.basil' as Stripe.LatestApiVersion,
+    ...(options.disableConnectionRetries ? {
+      httpClient: onboardingCheckoutHttpClient(),
+      maxNetworkRetries: 0,
+    } : {}),
   });
 }
 
