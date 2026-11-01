@@ -1,0 +1,45 @@
+name: Native asset regression
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-assets-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-assets:
+    name: Native asset compatibility
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      CI: 'true'
+      EXPO_NO_TELEMETRY: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.26.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+      - name: Install locked mobile dependencies
+        run: pnpm --filter workspace --filter @workspace/mobile... install --frozen-lockfile
+      - name: Build shared client type declarations
+        run: pnpm exec tsc --build lib/api-client-react/tsconfig.json
+      - name: Check mobile types
+        run: pnpm --filter @workspace/mobile run typecheck
+      # Exercise installed Expo/Metro transforms, copying, URL resolution and
+      # completeness checks with temporary fixtures, not a running application.
+      - name: Run native asset and distribution regressions
+        working-directory: artifacts/mobile
+        run: node --test server/native-*.test.cjs
