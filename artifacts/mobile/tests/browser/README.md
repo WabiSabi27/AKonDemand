@@ -91,6 +91,17 @@ Bundle response hashes are checked against the original export, and the whole
 export is fingerprinted before and after reuse. Existing resolver unit tests
 continue to cover the separate injected native and Metro-development addresses.
 
+The same suite also runs six negative controls through the shared
+`api-origin-request-guard.cjs`: the three generated-list paths and legacy
+payment-config path aimed at a different loopback recorder, plus POSTs to the
+current origin's list and payment-config paths. Interception is installed
+before navigation. Each case requires a failed browser request, an exact
+blocked-request report, no substituted fixture response, and zero delivery of
+the blocked request to either recorder. The other recorder is first probed to
+prove it is reachable and allows cross-origin responses; CORS or an unavailable
+server cannot substitute for the guard. These controls need no live services
+and reuse the suite's single export rather than building again per case.
+
 Chromium must be installed; launch failures are failures, not skips. On Nix,
 set `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` to an available wrapped Chromium.
 Failure screenshots and traces go to the ignored
